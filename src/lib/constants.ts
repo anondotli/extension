@@ -1,0 +1,16 @@
+export const MB = 1024 * 1024;
+export const GB = 1024 * MB;
+export const MAX_CHUNKS_PER_FILE = 100;
+export const MIN_CHUNK_SIZE = 50 * MB;
+export const FILE_SIZE_THRESHOLD_1GB = 1 * GB;
+export const ARGON2_MEMORY = 65536;
+export const ARGON2_TIME = 3;
+export const ARGON2_PARALLELISM = 1;
+export const ARGON2_HASH_LENGTH = 32;
+export const AUTH_TAG_SIZE = 16;
+export const IV_LENGTH = 12;
+export const SALT_LENGTH = 32;
+export const MAX_RETRIES = 3;
+export const RETRY_BASE_DELAY = 1000;
+export const EXTENSION_VERSION = "0.1.0";
+export const DEFAULT_BASE_URL = "https://anon.li";

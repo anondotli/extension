@@ -1,0 +1,73 @@
+name: Extension Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "extension/v*"
+
+jobs:
+  build:
+    name: Build Extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: extension
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Chrome (MV3)
+        run: bun run build
+
+      - name: Build Firefox (MV2)
+        run: bun run build:firefox
+
+      - name: Zip Chrome
+        run: bun run zip
+
+      - name: Zip Firefox
+        run: bun run zip:firefox
+
+      - name: Upload Chrome artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anon.li-chrome
+          path: extension/.output/*.zip
+          if-no-files-found: error
+
+      - name: Upload Firefox artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anon.li-firefox
+          path: extension/.output/*.zip
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/extension/v')
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: zips
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: zips/**/*.zip
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
