@@ -11,10 +11,6 @@ jobs:
   build:
     name: Build Extension
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: extension
-
     steps:
       - uses: actions/checkout@v4
 
@@ -41,14 +37,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: anon.li-chrome
-          path: extension/.output/*.zip
+          path: .output/*.zip
           if-no-files-found: error
 
       - name: Upload Firefox artifact
         uses: actions/upload-artifact@v4
         with:
           name: anon.li-firefox
-          path: extension/.output/*.zip
+          path: .output/*.zip
           if-no-files-found: error
 
   release:
