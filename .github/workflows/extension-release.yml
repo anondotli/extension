@@ -39,6 +39,7 @@ jobs:
           name: anon.li-chrome
           path: .output/*.zip
           if-no-files-found: error
+          include-hidden-files: true
 
       - name: Upload Firefox artifact
         uses: actions/upload-artifact@v4
@@ -46,6 +47,7 @@ jobs:
           name: anon.li-firefox
           path: .output/*.zip
           if-no-files-found: error
+          include-hidden-files: true
 
   release:
     name: GitHub Release
