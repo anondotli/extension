@@ -7,7 +7,7 @@ export default defineConfig({
   manifest: {
     name: "anon.li",
     description: "Anonymous email aliases and encrypted file sharing",
-    version: "0.1.0",
+    version: "1.0.0",
     permissions: [
       "storage",
       "contextMenus",
