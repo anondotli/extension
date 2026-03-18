@@ -29,6 +29,14 @@ export default defineConfig({
       "96": "icons/icon-96.png",
       "128": "icons/icon-128.png",
     },
+    browser_specific_settings: {
+      gecko: {
+        id: "extension@anon.li",
+        data_collection_permissions: {
+          required: ["none"],
+        },
+      } as Record<string, unknown>,
+    },
   },
   vite: () => ({
     plugins: [preact(), tailwindcss()],

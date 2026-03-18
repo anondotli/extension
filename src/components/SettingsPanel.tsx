@@ -309,9 +309,23 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               type="button"
               onClick={handleTest}
               disabled={testing || !apiKey.trim()}
-              className="px-4 h-9 text-sm font-medium rounded-md border border-input bg-transparent text-foreground hover:bg-secondary/50 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              title="Test connection"
+              aria-label="Test connection"
+              className="h-9 w-9 flex items-center justify-center rounded-md border border-input bg-transparent text-foreground hover:bg-secondary/50 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shrink-0"
             >
-              {testing ? "Testing…" : "Test"}
+              {testing ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" className="animate-spin">
+                  <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M2 20h.01" />
+                  <path d="M7 20v-4" />
+                  <path d="M12 20v-8" />
+                  <path d="M17 20V8" />
+                  <path d="M22 4v16" />
+                </svg>
+              )}
             </button>
           </div>
         </form>

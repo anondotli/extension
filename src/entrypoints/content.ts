@@ -3,7 +3,7 @@ import { getApiKey, getIgnoredSites, isHostnameIgnored } from "../lib/storage";
 
 export default defineContentScript({
   matches: ["<all_urls>"],
-  exclude_matches: ["*://anon.li/*", "*://www.anon.li/*"],
+  excludeMatches: ["*://anon.li/*", "*://www.anon.li/*"],
   runAt: "document_idle",
   async main() {
     // Check if this site is on the ignore list
@@ -47,14 +47,38 @@ export default defineContentScript({
         : { bg: "rgba(0,0,0,0.08)", fg: "#0d0d0d" };
     }
 
-    const anonLogoSvg = `<svg width="10" height="10" viewBox="0 0 74.4482 80.1979" fill="currentColor" aria-hidden="true">
-      <path d="M35.7493 80.0307c-11.8-4.1933-24.826-17.7872-30.599-31.9333-1.4649-3.5892-1.4868-3.8341-.2161-2.4151 1.491 1.6651 2.7252 2.7875 3.9088 3.5544.7994.518 1.3515 1.2376 2.2164 2.8886 5.089 9.7142 13.0484 17.6656 23.1522 23.1285 3.0907 1.6711 3.1433 1.6692 6.5703-.2365 10.2187-5.6827 18.0893-13.657 22.9154-23.2176.571-1.1312 1.1923-1.8855 2.1047-2.5552.712-.5227 2.1423-1.8427 3.1784-2.9334 3.8482-4.0513-2.0974 8.5941-7.2876 15.4995-7.4726 9.9421-21.5054 19.7973-25.9435 18.2201zm-20.4374-30.926C5.8412 46.5475.4083 36.3923.0452 20.5681-.2105 9.427.1017 9.1148 15.4513 5.1608a28388.79 28388.79 0 0 0 16.0671-4.1436c5.7483-1.4856 5.7483-1.4856 15.2135.9505 5.206 1.3399 12.2632 3.1506 15.683 4.024C73.8979 8.9238 74.4567 9.573 74.448 19.9694c-.0157 19.0525-7.6385 30.0487-20.4999 29.5722-16.6233-.6158-18.3918-24.4894-2.0617-27.8319 5.4395-1.1133 12.1037.5125 11.8897 2.9007-.7265 8.1069-9.4624 13.4982-17.4348 10.7598-4.7851-1.6437-1.5047 7.2862 3.5416 9.6408 10.7055 4.9953 19.8165-4.7554 21.02-22.4957.722-10.6436.9781-10.3791-13.6475-14.0872-5.5298-1.402-12.3-3.1316-15.045-3.8436-4.991-1.2947-4.991-1.2947-6.8792-.7722-1.0386.2873-7.3056 1.904-13.9268 3.5928-15.9272 4.0621-15.3558 3.884-16.4933 5.143-3.1219 3.4555-1.0734 19.9929 3.3182 26.7875 6.1488 9.5133 19.1903 8.8993 21.7753-1.0252.8928-3.4276.6746-3.7862-1.7872-2.9374-7.6683 2.6438-15.3542-1.748-17.2453-9.8544-.9618-4.1227 8.8938-5.7768 15.403-2.5851 15.559 7.6291 5.7964 30.7234-11.0633 26.1711z"/>
-    </svg>`;
+    const SVG_NS = "http://www.w3.org/2000/svg";
 
-    const spinnerSvg = `<svg style="animation:anonli-spin 0.6s linear infinite" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-      <path d="M21 3v5h-5"/>
-    </svg>`;
+    function createLogoSvg(): SVGSVGElement {
+      const svg = document.createElementNS(SVG_NS, "svg");
+      svg.setAttribute("width", "10");
+      svg.setAttribute("height", "10");
+      svg.setAttribute("viewBox", "0 0 74.4482 80.1979");
+      svg.setAttribute("fill", "currentColor");
+      svg.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", "M35.7493 80.0307c-11.8-4.1933-24.826-17.7872-30.599-31.9333-1.4649-3.5892-1.4868-3.8341-.2161-2.4151 1.491 1.6651 2.7252 2.7875 3.9088 3.5544.7994.518 1.3515 1.2376 2.2164 2.8886 5.089 9.7142 13.0484 17.6656 23.1522 23.1285 3.0907 1.6711 3.1433 1.6692 6.5703-.2365 10.2187-5.6827 18.0893-13.657 22.9154-23.2176.571-1.1312 1.1923-1.8855 2.1047-2.5552.712-.5227 2.1423-1.8427 3.1784-2.9334 3.8482-4.0513-2.0974 8.5941-7.2876 15.4995-7.4726 9.9421-21.5054 19.7973-25.9435 18.2201zm-20.4374-30.926C5.8412 46.5475.4083 36.3923.0452 20.5681-.2105 9.427.1017 9.1148 15.4513 5.1608a28388.79 28388.79 0 0 0 16.0671-4.1436c5.7483-1.4856 5.7483-1.4856 15.2135.9505 5.206 1.3399 12.2632 3.1506 15.683 4.024C73.8979 8.9238 74.4567 9.573 74.448 19.9694c-.0157 19.0525-7.6385 30.0487-20.4999 29.5722-16.6233-.6158-18.3918-24.4894-2.0617-27.8319 5.4395-1.1133 12.1037.5125 11.8897 2.9007-.7265 8.1069-9.4624 13.4982-17.4348 10.7598-4.7851-1.6437-1.5047 7.2862 3.5416 9.6408 10.7055 4.9953 19.8165-4.7554 21.02-22.4957.722-10.6436.9781-10.3791-13.6475-14.0872-5.5298-1.402-12.3-3.1316-15.045-3.8436-4.991-1.2947-4.991-1.2947-6.8792-.7722-1.0386.2873-7.3056 1.904-13.9268 3.5928-15.9272 4.0621-15.3558 3.884-16.4933 5.143-3.1219 3.4555-1.0734 19.9929 3.3182 26.7875 6.1488 9.5133 19.1903 8.8993 21.7753-1.0252.8928-3.4276.6746-3.7862-1.7872-2.9374-7.6683 2.6438-15.3542-1.748-17.2453-9.8544-.9618-4.1227 8.8938-5.7768 15.403-2.5851 15.559 7.6291 5.7964 30.7234-11.0633 26.1711z");
+      svg.appendChild(path);
+      return svg;
+    }
+
+    function createSpinnerSvg(): SVGSVGElement {
+      const svg = document.createElementNS(SVG_NS, "svg");
+      svg.setAttribute("width", "10");
+      svg.setAttribute("height", "10");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      svg.setAttribute("fill", "none");
+      svg.setAttribute("stroke", "currentColor");
+      svg.setAttribute("stroke-width", "2.5");
+      svg.style.animation = "anonli-spin 0.6s linear infinite";
+      const path1 = document.createElementNS(SVG_NS, "path");
+      path1.setAttribute("d", "M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8");
+      const path2 = document.createElementNS(SVG_NS, "path");
+      path2.setAttribute("d", "M21 3v5h-5");
+      svg.appendChild(path1);
+      svg.appendChild(path2);
+      return svg;
+    }
 
     // Inject spin keyframe once
     if (!document.getElementById("anonli-styles")) {
@@ -64,8 +88,12 @@ export default defineContentScript({
       document.head.appendChild(style);
     }
 
-    function getBtnHTML(colors: { fg: string }): string {
-      return `${anonLogoSvg}<span style="color:${colors.fg};font-size:10px;font-family:system-ui,sans-serif;line-height:1">anon.li</span>`;
+    function setBtnContent(btn: HTMLButtonElement, colors: { fg: string }) {
+      btn.replaceChildren(createLogoSvg());
+      const label = document.createElement("span");
+      label.style.cssText = `color:${colors.fg};font-size:10px;font-family:system-ui,sans-serif;line-height:1`;
+      label.textContent = "anon.li";
+      btn.appendChild(label);
     }
 
     function findContainer(input: HTMLInputElement): HTMLElement {
@@ -117,7 +145,7 @@ export default defineContentScript({
         opacity: 0.85;
         transition: opacity 0.15s;
       `;
-      btn.innerHTML = getBtnHTML(colors);
+      setBtnContent(btn, colors);
 
       btn.addEventListener("mouseenter", () => { btn.style.opacity = "1"; });
       btn.addEventListener("mouseleave", () => { btn.style.opacity = "0.85"; });
@@ -132,7 +160,7 @@ export default defineContentScript({
           return;
         }
 
-        btn.innerHTML = spinnerSvg;
+        btn.replaceChildren(createSpinnerSvg());
         btn.style.opacity = "0.6";
 
         try {
@@ -154,7 +182,7 @@ export default defineContentScript({
         } catch {
           showToast("Failed to generate alias", true);
         } finally {
-          btn.innerHTML = getBtnHTML(colors);
+          setBtnContent(btn, colors);
           btn.style.opacity = "0.85";
         }
       });
