@@ -1,0 +1,146 @@
+@import "tailwindcss";
+
+@theme {
+  /* Light mode — exact values matching app/globals.css */
+  --color-background: hsl(0 0% 100%);
+  --color-foreground: hsl(0 0% 5%);
+  --color-card: hsl(0 0% 100%);
+  --color-card-foreground: hsl(0 0% 5%);
+  --color-primary: hsl(0 0% 5%);
+  --color-primary-foreground: hsl(0 0% 100%);
+  --color-secondary: hsl(0 0% 96%);
+  --color-secondary-foreground: hsl(0 0% 5%);
+  --color-muted: hsl(0 0% 96%);
+  --color-muted-foreground: hsl(0 0% 45%);
+  --color-accent: hsl(0 0% 96%);
+  --color-accent-foreground: hsl(0 0% 5%);
+  --color-border: hsl(0 0% 90%);
+  --color-input: hsl(0 0% 90%);
+  --color-ring: hsl(0 0% 5%);
+  --color-destructive: hsl(0 84.2% 60.2%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+  --color-success: hsl(142 71% 45%);
+  --color-success-foreground: hsl(0 0% 100%);
+
+  --radius: 0.5rem;
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --color-background: hsl(0 0% 3%);
+    --color-foreground: hsl(0 0% 95%);
+    --color-card: hsl(0 0% 5%);
+    --color-card-foreground: hsl(0 0% 95%);
+    --color-primary: hsl(0 0% 95%);
+    --color-primary-foreground: hsl(0 0% 5%);
+    --color-secondary: hsl(0 0% 12%);
+    --color-secondary-foreground: hsl(0 0% 95%);
+    --color-muted: hsl(0 0% 12%);
+    --color-muted-foreground: hsl(0 0% 55%);
+    --color-accent: hsl(0 0% 15%);
+    --color-accent-foreground: hsl(0 0% 100%);
+    --color-border: hsl(0 0% 15%);
+    --color-input: hsl(0 0% 15%);
+    --color-ring: hsl(0 0% 95%);
+    --color-destructive: hsl(0 62.8% 30.6%);
+    --color-destructive-foreground: hsl(0 0% 98%);
+    --color-success: hsl(142 71% 45%);
+    --color-success-foreground: hsl(0 0% 100%);
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-background: hsl(0 0% 3%);
+  --color-foreground: hsl(0 0% 95%);
+  --color-card: hsl(0 0% 5%);
+  --color-card-foreground: hsl(0 0% 95%);
+  --color-primary: hsl(0 0% 95%);
+  --color-primary-foreground: hsl(0 0% 5%);
+  --color-secondary: hsl(0 0% 12%);
+  --color-secondary-foreground: hsl(0 0% 95%);
+  --color-muted: hsl(0 0% 12%);
+  --color-muted-foreground: hsl(0 0% 55%);
+  --color-accent: hsl(0 0% 15%);
+  --color-accent-foreground: hsl(0 0% 100%);
+  --color-border: hsl(0 0% 15%);
+  --color-input: hsl(0 0% 15%);
+  --color-ring: hsl(0 0% 95%);
+  --color-destructive: hsl(0 62.8% 30.6%);
+  --color-destructive-foreground: hsl(0 0% 98%);
+  --color-success: hsl(142 71% 45%);
+  --color-success-foreground: hsl(0 0% 100%);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Breathe animation for logo spinner */
+@keyframes breathe {
+  0%, 100% { opacity: 0.4; transform: scale(0.95); }
+  50% { opacity: 1; transform: scale(1.05); }
+}
+.animate-breathe {
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+/* Slide animations for create forms and list items */
+@keyframes slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-down {
+  animation: slide-down 0.18s ease-out;
+}
+.animate-slide-up {
+  animation: slide-up 0.18s ease-out;
+}
+
+/* CSS spinner for content script */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Luxury shadow utilities matching app/globals.css */
+.luxury-shadow-sm {
+  box-shadow: 0 2px 8px -2px rgba(0,0,0,0.2), 0 4px 16px -4px rgba(0,0,0,0.1);
+}
+.luxury-shadow-md {
+  box-shadow: 0 4px 16px -4px rgba(0,0,0,0.3), 0 8px 32px -8px rgba(0,0,0,0.2), 0 16px 64px -16px rgba(0,0,0,0.1);
+}
+
+/* Thin scrollbar for compact popup */
+::-webkit-scrollbar {
+  width: 3px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  margin: 0;
+  font-feature-settings: "kern" 1, "liga" 1, "calt" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.011em;
+}
