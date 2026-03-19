@@ -2,7 +2,7 @@ import { defineBackground } from "wxt/utils/define-background";
 import { getApiKey, addIgnoredSite } from "../lib/storage";
 import { apiPost, apiGetList, apiGet } from "../lib/api";
 import { setCache, getCached } from "../lib/cache";
-import { AuthError, RateLimitError, NetworkError } from "../lib/errors";
+import { AuthError } from "../lib/errors";
 import type { Alias, Drop, User } from "../lib/types";
 
 export default defineBackground(() => {
@@ -17,12 +17,6 @@ export default defineBackground(() => {
   // Onboarding flow
   browser.runtime.onInstalled.addListener((details) => {
     if (details.reason === "install") {
-      browser.notifications.create({
-        type: "basic",
-        iconUrl: browser.runtime.getURL("/icons/icon-48.png"),
-        title: "Welcome to anon.li",
-        message: "Please configure your API key to get started.",
-      });
       if (typeof browser.action?.openPopup === "function") {
         browser.action.openPopup().catch(() => {});
       } else {
@@ -170,12 +164,6 @@ export default defineBackground(() => {
 
       if (hostname) {
         await addIgnoredSite(hostname);
-        browser.notifications.create({
-          type: "basic",
-          iconUrl: browser.runtime.getURL("/icons/icon-48.png"),
-          title: "anon.li — Site ignored",
-          message: `anon.li button will no longer appear on ${hostname}`,
-        });
 
         // Tell content script to remove buttons immediately
         const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
@@ -235,45 +223,18 @@ export default defineBackground(() => {
             await copyToClipboard(email);
             copied = true;
           } catch {
-            // Clipboard not available — fall back to notification only
+            // Clipboard not available
           }
         }
 
-        const message = filled
-          ? `${email} — filled in input`
-          : copied
-            ? `${email} — copied to clipboard`
-            : email;
-
-        browser.notifications.create({
-          type: "basic",
-          iconUrl: browser.runtime.getURL("/icons/icon-48.png"),
-          title: "anon.li — Alias created",
-          message,
-        });
       } catch (err) {
-        let message: string;
         if (err instanceof AuthError) {
-          message = "API key invalid — open settings to fix";
           if (typeof browser.action?.openPopup === "function") {
             browser.action.openPopup().catch(() => {});
           } else {
             browser.runtime.openOptionsPage();
           }
-        } else if (err instanceof RateLimitError) {
-          const secs = Math.max(0, Math.ceil((err.resetAt.getTime() - Date.now()) / 1000));
-          message = `Rate limited. Retry in ${secs}s`;
-        } else if (err instanceof NetworkError) {
-          message = "You're offline. Check your connection and try again.";
-        } else {
-          message = err instanceof Error ? err.message : "Failed to generate alias";
         }
-        browser.notifications.create({
-          type: "basic",
-          iconUrl: browser.runtime.getURL("/icons/icon-48.png"),
-          title: "anon.li — Error",
-          message,
-        });
       }
     }
   });
