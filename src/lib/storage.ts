@@ -30,11 +30,12 @@ export async function setTheme(theme: "light" | "dark" | null): Promise<void> {
 
 export interface AliasSettings {
   domain: string;
+  defaultFormat: "random" | "custom";
 }
 
 export async function getAliasSettings(): Promise<AliasSettings> {
   const result = await browser.storage.local.get("aliasSettings");
-  return (result.aliasSettings as AliasSettings) ?? { domain: "anon.li" };
+  return (result.aliasSettings as AliasSettings) ?? { domain: "anon.li", defaultFormat: "random" };
 }
 
 export async function setAliasSettings(s: AliasSettings): Promise<void> {

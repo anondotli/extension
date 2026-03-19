@@ -7,7 +7,8 @@ import { AliasListSkeleton } from "../alias/AliasListSkeleton";
 import { apiGetList, apiPost } from "../../lib/api";
 import { copyToClipboard } from "../../lib/utils";
 import { setUiState } from "../../lib/storage";
-import { getCached, setCache, isFresh } from "../../lib/cache";
+import { getCached, setCache, isFresh, storageKey } from "../../lib/cache";
+import type { CacheEntry } from "../../lib/cache";
 import { toUserMessage } from "../../lib/errors";
 import type { Alias, User, Domain } from "../../lib/types";
 import type { PopupActions } from "../App";
@@ -40,6 +41,21 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
 
   useEffect(() => {
     loadAliases();
+
+    // Listen for external cache updates (e.g. background creating an alias)
+    const sk = storageKey("aliases");
+    function onStorageChanged(changes: Record<string, { newValue?: unknown }>) {
+      const change = changes[sk];
+      if (!change?.newValue) return;
+      const entry = change.newValue as CacheEntry<Alias[]>;
+      // Only apply if this is a newer generation than what we already have
+      if (entry.generation > cacheGenRef.current) {
+        cacheGenRef.current = entry.generation;
+        setAliases(entry.data);
+      }
+    }
+    browser.storage.onChanged.addListener(onStorageChanged);
+    return () => browser.storage.onChanged.removeListener(onStorageChanged);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount
   }, []);
 
@@ -120,16 +136,18 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
     setFocusedIndex(-1);
   }, [search, filterMode, sortMode]);
 
+  // Track cache generation so we can detect external updates
+  const cacheGenRef = useRef(0);
+
   async function loadAliases() {
-    // Try cache first
+    // Try cache first for instant display
     const cached = await getCached<Alias[]>("aliases");
     if (cached) {
       setAliases(cached.data);
+      cacheGenRef.current = cached.generation;
       setLoading(false);
-      // If stale, revalidate in background
-      if (!isFresh(cached)) {
-        revalidateAliases();
-      }
+      // Always revalidate in background to stay fresh
+      revalidateAliases();
       return;
     }
 
@@ -138,6 +156,8 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
       const result = await apiGetList<Alias>("/api/v1/alias?limit=50");
       setAliases(result.data);
       await setCache("aliases", result.data, result.total);
+      const entry = await getCached<Alias[]>("aliases");
+      if (entry) cacheGenRef.current = entry.generation;
     } catch (err) {
       const msg = toUserMessage(err);
       onError(msg.message, msg.action);
@@ -202,27 +222,6 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
     setUiState({ aliasFilter: mode });
   }
 
-  function handleExportCsv() {
-    const header = "email,label,note,active,createdAt";
-    const rows = aliases.map((a) =>
-      [
-        `"${a.email}"`,
-        `"${(a.label ?? "").replace(/"/g, '""')}"`,
-        `"${(a.note ?? "").replace(/"/g, '""')}"`,
-        a.active,
-        a.createdAt,
-      ].join(",")
-    );
-    const csv = [header, ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `anon-li-aliases-${new Date().toISOString().split("T")[0]}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    onSuccess("Aliases exported");
-  }
 
   // Alias count stats
   const randomLimit = user?.aliases?.random.limit ?? null;
@@ -309,21 +308,7 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
           </div>
           {/* Sort + refresh + export */}
           <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={handleExportCsv}
-              disabled={aliases.length === 0}
-              className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
-              title="Export CSV"
-              aria-label="Export aliases as CSV"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" y1="15" x2="12" y2="3"/>
-              </svg>
-            </button>
-            <button
+<button
               type="button"
               onClick={handleRefresh}
               disabled={refreshing}

@@ -1,9 +1,9 @@
 
 import { useState, useEffect, useCallback } from "preact/hooks";
-import { getApiKey, setApiKey, getBaseUrl, setBaseUrl, getSyncDropKeys, setSyncDropKeys, getIgnoredSites, addIgnoredSite, removeIgnoredSite } from "../lib/storage";
-import { apiGet } from "../lib/api";
+import { getApiKey, setApiKey, getBaseUrl, setBaseUrl, getSyncDropKeys, setSyncDropKeys, getIgnoredSites, addIgnoredSite, removeIgnoredSite, getAliasSettings, setAliasSettings } from "../lib/storage";
+import { apiGet, apiGetList } from "../lib/api";
 import { DEFAULT_BASE_URL, EXTENSION_VERSION } from "../lib/constants";
-import type { User } from "../lib/types";
+import type { User, Domain } from "../lib/types";
 import { Toggle } from "./ui/Toggle";
 
 interface SettingsPanelProps {
@@ -23,10 +23,13 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [ignoredSites, setIgnoredSitesState] = useState<string[]>([]);
   const [newIgnoredSite, setNewIgnoredSite] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
+  const [defaultDomain, setDefaultDomain] = useState("anon.li");
+  const [availableDomains, setAvailableDomains] = useState<string[]>(["anon.li"]);
+  const [defaultFormat, setDefaultFormat] = useState<"random" | "custom">("random");
 
   useEffect(() => {
     (async () => {
-      const [key, url, sync, ignored] = await Promise.all([getApiKey(), getBaseUrl(), getSyncDropKeys(), getIgnoredSites()]);
+      const [key, url, sync, ignored, aliasSettings] = await Promise.all([getApiKey(), getBaseUrl(), getSyncDropKeys(), getIgnoredSites(), getAliasSettings()]);
       if (key) {
         setApiKeyState(key);
         setOriginalApiKey(key);
@@ -34,6 +37,16 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       if (url) setBaseUrlState(url);
       setSyncDropKeysState(sync);
       setIgnoredSitesState(ignored);
+      setDefaultDomain(aliasSettings.domain);
+      setDefaultFormat(aliasSettings.defaultFormat ?? "random");
+
+      try {
+        const domains = await apiGetList<Domain>("/api/v1/domain");
+        const verified = domains.data.filter((d) => d.verified).map((d) => d.domain);
+        setAvailableDomains(["anon.li", ...verified]);
+      } catch {
+        setAvailableDomains(["anon.li"]);
+      }
     })();
   }, []);
 
@@ -71,6 +84,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setApiKey(trimmed),
         setBaseUrl(baseUrl.trim() || DEFAULT_BASE_URL),
         setSyncDropKeys(syncDropKeys),
+        setAliasSettings({ domain: defaultDomain, defaultFormat }),
       ]);
       setOriginalApiKey(trimmed);
       setSaved(true);
@@ -170,6 +184,38 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               className="h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm text-foreground placeholder:text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
             />
             <p className="text-xs text-muted-foreground mt-1.5">Only change if self-hosting</p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-foreground mb-1.5" for="settings-defaultDomain">
+              Default alias domain
+            </label>
+            <div className="relative">
+              <select
+                id="settings-defaultDomain"
+                value={defaultDomain}
+                onChange={(e) => { setDefaultDomain((e.target as HTMLSelectElement).value); setSaved(false); }}
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 pr-8 py-1 text-sm shadow-sm text-foreground appearance-none transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+              >
+                {availableDomains.map((d) => (
+                  <option key={d} value={d}>@{d}</option>
+                ))}
+              </select>
+              <svg className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5">Domain used when creating new aliases</p>
+          </div>
+
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-foreground">Default to custom aliases</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Open alias creation in custom mode instead of random
+              </p>
+            </div>
+            <Toggle checked={defaultFormat === "custom"} onChange={() => { setDefaultFormat((f) => f === "random" ? "custom" : "random"); setSaved(false); }} />
           </div>
 
           <div className="flex items-center justify-between gap-3">

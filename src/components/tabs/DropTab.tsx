@@ -1,12 +1,13 @@
 
-import { useState, useEffect } from "preact/hooks";
+import { useState, useEffect, useRef } from "preact/hooks";
 import { DropList } from "../drop/DropList";
 import { DropCreate } from "../drop/DropCreate";
 import { DropListSkeleton } from "../drop/DropListSkeleton";
 import { QRModal } from "../ui/QRModal";
 import { apiGetList } from "../../lib/api";
 import { getDropKeys, getBaseUrl, setUiState } from "../../lib/storage";
-import { getCached, setCache, isFresh } from "../../lib/cache";
+import { getCached, setCache, isFresh, storageKey } from "../../lib/cache";
+import type { CacheEntry } from "../../lib/cache";
 import { toUserMessage } from "../../lib/errors";
 import { copyToClipboard } from "../../lib/utils";
 import type { Drop } from "../../lib/types";
@@ -36,18 +37,21 @@ export function DropTab({ onError, onSuccess, onCountChange, popupActions }: Dro
   const [qrTarget, setQrTarget] = useState<{ drop: Drop; url: string } | null>(null);
   const [focusedIndex, setFocusedIndex] = useState(-1);
 
+  // Track cache generation so we can detect external updates
+  const cacheGenRef = useRef(0);
+
   async function loadDrops(reset = true) {
     if (reset) {
-      // Try cache first
+      // Try cache first for instant display
       const cached = await getCached<Drop[]>("drops");
       if (cached) {
         setDrops(cached.data);
         setDropKeys(await getDropKeys());
         setHasMore(cached.total > cached.data.length);
+        cacheGenRef.current = cached.generation;
         setLoading(false);
-        if (!isFresh(cached)) {
-          revalidateDrops();
-        }
+        // Always revalidate in background to stay fresh
+        revalidateDrops();
         return;
       }
       setLoading(true);
@@ -96,6 +100,21 @@ export function DropTab({ onError, onSuccess, onCountChange, popupActions }: Dro
 
   useEffect(() => {
     loadDrops();
+
+    // Listen for external cache updates (e.g. background prefetch)
+    const sk = storageKey("drops");
+    function onStorageChanged(changes: Record<string, { newValue?: unknown }>) {
+      const change = changes[sk];
+      if (!change?.newValue) return;
+      const entry = change.newValue as CacheEntry<Drop[]>;
+      if (entry.generation > cacheGenRef.current) {
+        cacheGenRef.current = entry.generation;
+        setDrops(entry.data);
+        setHasMore(entry.total > entry.data.length);
+      }
+    }
+    browser.storage.onChanged.addListener(onStorageChanged);
+    return () => browser.storage.onChanged.removeListener(onStorageChanged);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount
   }, []);
 

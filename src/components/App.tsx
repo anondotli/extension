@@ -181,7 +181,7 @@ export function App() {
           {user && (
             <button
               type="button"
-              onClick={() => setShowAccount((s) => !s)}
+              onClick={() => { setShowSettings(false); setShowAccount((s) => !s); }}
               className="text-muted-foreground hover:text-foreground transition-colors"
               title="Account"
               aria-label="Account"
@@ -212,7 +212,7 @@ export function App() {
           </button>
           <button
             type="button"
-            onClick={() => setShowSettings((s) => !s)}
+            onClick={() => { setShowAccount(false); setShowSettings((s) => !s); }}
             className="text-muted-foreground hover:text-foreground transition-colors"
             title="Settings"
             aria-label="Settings"

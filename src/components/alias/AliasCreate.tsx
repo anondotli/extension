@@ -41,6 +41,7 @@ export function AliasCreate({ domains, onCreated, onCancel, onError, onSuccess }
   useEffect(() => {
     getAliasSettings().then((s) => {
       setDomain(availableDomains.includes(s.domain) ? s.domain : "anon.li");
+      if (s.defaultFormat) setMode(s.defaultFormat);
     });
   }, [availableDomains]);
 
@@ -75,7 +76,8 @@ export function AliasCreate({ domains, onCreated, onCancel, onError, onSuccess }
         createdAt: data.created_at,
       };
 
-      await setAliasSettings({ domain });
+      const currentSettings = await getAliasSettings();
+      await setAliasSettings({ domain, defaultFormat: currentSettings.defaultFormat });
       await copyToClipboard(alias.email);
       onCreated(alias);
       onSuccess(`Created ${alias.email} — copied!`);

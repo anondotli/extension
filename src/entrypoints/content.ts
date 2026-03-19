@@ -166,7 +166,13 @@ export default defineContentScript({
         try {
           const response = await browser.runtime.sendMessage({ type: "GENERATE_ALIAS", hostname: location.hostname.replace(/^www\./, '') }) as
             | { data: { email: string } }
-            | { error: string };
+            | { error: string }
+            | undefined;
+
+          if (!response || typeof response !== "object") {
+            showToast("Failed to generate alias", true);
+            return;
+          }
 
           if ("error" in response) {
             showToast(response.error, true);
@@ -260,34 +266,115 @@ export default defineContentScript({
     });
     observer.observe(document.body, { childList: true, subtree: true });
 
-    // Listen for messages from background script
-    browser.runtime.onMessage.addListener((msg: unknown) => {
-      if (typeof msg !== "object" || msg === null) return;
-      const type = (msg as { type?: string }).type;
+    // Track the last right-clicked input for context menu alias generation.
+    // Use capture phase so page handlers can't stopPropagation before us.
+    // Also use elementsFromPoint to find inputs under overlay elements.
+    let lastRightClickedInput: HTMLInputElement | HTMLTextAreaElement | null = null;
 
-      if (type === "ALIAS_GENERATED") {
-        const email = (msg as { email?: string }).email;
-        if (!email) return;
-
-        const active = document.activeElement;
-        if (active instanceof HTMLInputElement && isEmailField(active)) {
-          active.value = email;
-          active.dispatchEvent(new Event("input", { bubbles: true }));
-          active.dispatchEvent(new Event("change", { bubbles: true }));
+    function findInputAt(e: MouseEvent): HTMLInputElement | HTMLTextAreaElement | null {
+      const target = e.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        return target;
+      }
+      // Check all elements at click position (handles overlay divs on top of inputs)
+      for (const el of document.elementsFromPoint(e.clientX, e.clientY)) {
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+          return el;
         }
       }
+      return null;
+    }
 
-      if (type === "SITE_IGNORED") {
-        // Remove all injected buttons and stop observing
-        observer.disconnect();
-        if (debounceTimer) clearTimeout(debounceTimer);
-        document.querySelectorAll(`[${ATTR}]`).forEach((input) => {
-          const container = findContainer(input as HTMLInputElement);
-          container.querySelectorAll('button[title="Generate anon.li alias"]').forEach((btn) => btn.remove());
-          input.removeAttribute(ATTR);
-        });
+    document.addEventListener("contextmenu", (e) => {
+      lastRightClickedInput = findInputAt(e);
+    }, true);
+
+    // Also track last focused input — backup for when contextmenu target detection fails
+    let lastFocusedInput: HTMLInputElement | HTMLTextAreaElement | null = null;
+
+    document.addEventListener("focusin", (e) => {
+      const target = e.target;
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+        lastFocusedInput = target;
       }
-    });
+    }, true);
+
+    async function copyText(text: string): Promise<boolean> {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Fallback for when async clipboard API isn't available
+        const el = document.createElement("textarea");
+        el.value = text;
+        el.style.cssText = "position:fixed;opacity:0;left:-9999px";
+        document.body.appendChild(el);
+        el.select();
+        const ok = document.execCommand("copy");
+        el.remove();
+        return ok;
+      }
+    }
+
+    // Listen for messages from background script
+    // NOTE: @wxt-dev/browser is NOT webextension-polyfill — it's a thin alias
+    // for chrome.* on Chrome. We must use sendResponse + return true for async
+    // responses, since Promise returns aren't reliably handled.
+    browser.runtime.onMessage.addListener(
+      (msg: unknown, _sender: unknown, sendResponse: (response: unknown) => void) => {
+        if (typeof msg !== "object" || msg === null) return;
+        const type = (msg as { type?: string }).type;
+
+        if (type === "ALIAS_GENERATED") {
+          const email = (msg as { email?: string }).email;
+          if (!email) {
+            sendResponse({ filled: false, copied: false });
+            return;
+          }
+
+          // Try: right-clicked input → focused input → active element
+          const active = document.activeElement;
+          let target: HTMLInputElement | HTMLTextAreaElement | null = null;
+          if (lastRightClickedInput && document.contains(lastRightClickedInput)) {
+            target = lastRightClickedInput;
+          } else if (lastFocusedInput && document.contains(lastFocusedInput)) {
+            target = lastFocusedInput;
+          } else if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+            target = active;
+          }
+
+          lastRightClickedInput = null;
+
+          if (target) {
+            target.value = email;
+            target.dispatchEvent(new Event("input", { bubbles: true }));
+            target.dispatchEvent(new Event("change", { bubbles: true }));
+            target.focus();
+            showToast("Alias filled!", false);
+            sendResponse({ filled: true, copied: false });
+            return;
+          }
+
+          // No input to fill — copy to clipboard from content script (async)
+          copyText(email).then((ok) => {
+            if (ok) showToast("Alias copied to clipboard!", false);
+            sendResponse({ filled: false, copied: ok });
+          });
+          return true; // keep message channel open for async sendResponse
+        }
+
+        if (type === "SITE_IGNORED") {
+          // Remove all injected buttons and stop observing
+          observer.disconnect();
+          if (debounceTimer) clearTimeout(debounceTimer);
+          document.querySelectorAll(`[${ATTR}]`).forEach((input) => {
+            const container = findContainer(input as HTMLInputElement);
+            container.querySelectorAll('button[title="Generate anon.li alias"]').forEach((btn) => btn.remove());
+            input.removeAttribute(ATTR);
+          });
+        }
+      },
+    );
 
     // Live-update: if ignore list changes from Settings while page is open
     browser.storage.onChanged.addListener((changes) => {

@@ -217,9 +217,8 @@ export async function apiPost<T>(
   const baseUrl = await getBaseUrl();
   const url = `${baseUrl}${path}`;
   const headers = await getHeaders();
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: "POST",
-    credentials: "omit",
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -238,9 +237,8 @@ export async function apiPatch<T>(
   const baseUrl = await getBaseUrl();
   const url = `${baseUrl}${path}`;
   const headers = await getHeaders();
-  const res = await fetch(url, {
+  const res = await fetchWithRetry(url, {
     method: "PATCH",
-    credentials: "omit",
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -256,7 +254,7 @@ export async function apiDelete(path: string): Promise<{ rateLimit?: RateLimitIn
   const baseUrl = await getBaseUrl();
   const url = `${baseUrl}${path}`;
   const headers = await getHeaders();
-  const res = await fetch(url, { method: "DELETE", credentials: "omit", headers });
+  const res = await fetchWithRetry(url, { method: "DELETE", headers });
 
   if (!res.ok) await handleError(res);
 

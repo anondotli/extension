@@ -1,10 +1,19 @@
 import { defineBackground } from "wxt/utils/define-background";
 import { getApiKey, addIgnoredSite } from "../lib/storage";
 import { apiPost, apiGetList, apiGet } from "../lib/api";
-import { setCache } from "../lib/cache";
+import { setCache, getCached } from "../lib/cache";
+import { AuthError, RateLimitError, NetworkError } from "../lib/errors";
 import type { Alias, Drop, User } from "../lib/types";
 
 export default defineBackground(() => {
+  /** Prepend a newly-created alias to the cache so the popup shows it instantly. */
+  async function pushAliasToCache(alias: Alias) {
+    const cached = await getCached<Alias[]>("aliases");
+    const data = cached ? [alias, ...cached.data] : [alias];
+    const total = cached ? cached.total + 1 : 1;
+    await setCache("aliases", data, total);
+  }
+
   // Onboarding flow
   browser.runtime.onInstalled.addListener((details) => {
     if (details.reason === "install") {
@@ -87,11 +96,56 @@ export default defineBackground(() => {
     if (alarm.name === "prefetch") prefetchAndBadge();
   });
 
+  // ── Clipboard helper (MV3 offscreen) ──────────────────────────────
+  let creatingOffscreen: Promise<void> | null = null;
+
+  async function ensureOffscreenDocument() {
+    // @ts-expect-error -- offscreen API types may not be in all builds
+    if (typeof chrome?.offscreen?.hasDocument === "function") {
+      // @ts-expect-error
+      const exists = await chrome.offscreen.hasDocument();
+      if (exists) return;
+    }
+    if (creatingOffscreen) {
+      await creatingOffscreen;
+      return;
+    }
+    try {
+      // @ts-expect-error
+      creatingOffscreen = chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        // @ts-expect-error
+        reasons: [chrome.offscreen.Reason.CLIPBOARD],
+        justification: "Copy generated alias to clipboard",
+      });
+      await creatingOffscreen;
+    } finally {
+      creatingOffscreen = null;
+    }
+  }
+
+  async function copyToClipboard(text: string) {
+    // Try offscreen API first (Chrome MV3)
+    // @ts-expect-error
+    if (typeof chrome?.offscreen?.createDocument === "function") {
+      await ensureOffscreenDocument();
+      // Send message to offscreen document to perform the copy
+      await browser.runtime.sendMessage({ type: "OFFSCREEN_COPY", text });
+      return;
+    }
+    // Firefox MV3 supports navigator.clipboard in background
+    if (typeof navigator?.clipboard?.writeText === "function") {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    throw new Error("Clipboard API not available");
+  }
+
   // Context menus
   browser.contextMenus.create({
     id: "generate-alias",
     title: "Generate anon.li alias",
-    contexts: ["all"],
+    contexts: ["page", "editable"],
   });
 
   browser.contextMenus.create({
@@ -103,7 +157,7 @@ export default defineBackground(() => {
   browser.contextMenus.create({
     id: "ignore-site",
     title: "Don't show anon.li on this site",
-    contexts: ["all"],
+    contexts: ["page"],
   });
 
   browser.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -156,31 +210,69 @@ export default defineBackground(() => {
         const result = await apiPost<Alias>("/api/v1/alias?generate=true", hostname ? { description: hostname } : {});
         const email = result.data.email;
 
-        // Copy to clipboard via offscreen or notification
-        // Notification always works from background
+        // Update cache so popup shows the new alias instantly
+        pushAliasToCache(result.data).catch(() => {});
+
+        // Try to fill an active input via the content script first
+        let filled = false;
+        let copied = false;
+        if (tab?.id) {
+          try {
+            const response = await browser.tabs.sendMessage(tab.id, {
+              type: "ALIAS_GENERATED",
+              email,
+            }) as { filled?: boolean; copied?: boolean } | undefined;
+            filled = !!response?.filled;
+            copied = !!response?.copied;
+          } catch {
+            // Content script may not be loaded on this page — that's fine
+          }
+        }
+
+        // Only use offscreen clipboard if content script couldn't handle it
+        if (!filled && !copied) {
+          try {
+            await copyToClipboard(email);
+            copied = true;
+          } catch {
+            // Clipboard not available — fall back to notification only
+          }
+        }
+
+        const message = filled
+          ? `${email} — filled in input`
+          : copied
+            ? `${email} — copied to clipboard`
+            : email;
+
         browser.notifications.create({
           type: "basic",
           iconUrl: browser.runtime.getURL("/icons/icon-48.png"),
           title: "anon.li — Alias created",
-          message: email,
+          message,
         });
-
-        // Send to active tab content script to fill in email field if focused
-        const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-        if (tab?.id) {
-          browser.tabs.sendMessage(tab.id, {
-            type: "ALIAS_GENERATED",
-            email,
-          }).catch(() => {
-            // Content script may not be loaded on this page — that's fine
-          });
-        }
       } catch (err) {
+        let message: string;
+        if (err instanceof AuthError) {
+          message = "API key invalid — open settings to fix";
+          if (typeof browser.action?.openPopup === "function") {
+            browser.action.openPopup().catch(() => {});
+          } else {
+            browser.runtime.openOptionsPage();
+          }
+        } else if (err instanceof RateLimitError) {
+          const secs = Math.max(0, Math.ceil((err.resetAt.getTime() - Date.now()) / 1000));
+          message = `Rate limited. Retry in ${secs}s`;
+        } else if (err instanceof NetworkError) {
+          message = "You're offline. Check your connection and try again.";
+        } else {
+          message = err instanceof Error ? err.message : "Failed to generate alias";
+        }
         browser.notifications.create({
           type: "basic",
           iconUrl: browser.runtime.getURL("/icons/icon-48.png"),
           title: "anon.li — Error",
-          message: err instanceof Error ? err.message : "Failed to generate alias",
+          message,
         });
       }
     }
@@ -188,12 +280,11 @@ export default defineBackground(() => {
 
   // Message bus for content script / popup
   browser.runtime.onMessage.addListener(
-    (msg: unknown, _sender, sendResponse) => {
-      if (
-        typeof msg === "object" &&
-        msg !== null &&
-        (msg as { type?: string }).type === "OPEN_POPUP"
-      ) {
+    (msg: unknown, _sender: unknown, sendResponse: (response: unknown) => void) => {
+      if (typeof msg !== "object" || msg === null) return;
+      const type = (msg as { type?: string }).type;
+
+      if (type === "OPEN_POPUP") {
         if (typeof browser.action?.openPopup === "function") {
           browser.action.openPopup().catch(() => {});
         } else {
@@ -202,27 +293,22 @@ export default defineBackground(() => {
         return;
       }
 
-      if (
-        typeof msg === "object" &&
-        msg !== null &&
-        (msg as { type?: string }).type === "GENERATE_ALIAS"
-      ) {
+      if (type === "GENERATE_ALIAS") {
         const hostname = (msg as { hostname?: string }).hostname || "";
-        getApiKey().then((key) => {
-          if (!key) {
-            sendResponse({ error: "No API key configured" });
-            return;
+        (async () => {
+          const key = await getApiKey();
+          if (!key) return { error: "No API key configured" };
+          try {
+            const result = await apiPost<Alias>("/api/v1/alias?generate=true", hostname ? { description: hostname } : {});
+            // Update cache so popup shows the new alias instantly
+            await pushAliasToCache(result.data).catch(() => {});
+            return { data: result.data };
+          } catch (err) {
+            return { error: err instanceof Error ? err.message : "Failed" };
           }
-          apiPost<Alias>("/api/v1/alias?generate=true", hostname ? { description: hostname } : {})
-            .then((result) => sendResponse({ data: result.data }))
-            .catch((err) =>
-              sendResponse({
-                error: err instanceof Error ? err.message : "Failed",
-              })
-            );
-        });
-        return true; // async response
+        })().then(sendResponse);
+        return true; // keep channel open for async sendResponse
       }
-    }
+    },
   );
 });

@@ -15,6 +15,6 @@ export const RETRY_BASE_DELAY = 1000;
 export const EXTENSION_VERSION =
   typeof browser !== "undefined" && browser.runtime?.getManifest
     ? browser.runtime.getManifest().version
-    : "1.0.0";
+    : "1.1.0";
 export const REQUEST_TIMEOUT_MS = 15_000;
 export const DEFAULT_BASE_URL = "https://anon.li";
