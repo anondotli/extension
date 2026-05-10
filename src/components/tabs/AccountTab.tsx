@@ -110,11 +110,11 @@ export function AccountPanel({ user, onClose }: AccountPanelProps) {
               <p className="text-xs font-medium text-foreground">Limits</p>
               <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                 <span className="text-muted-foreground">Max file size</span>
-                <span className="text-right text-foreground">{formatBytes(user.limits.max_file_size)}</span>
+                <span className="text-right text-foreground">{formatBytes(user.limits.maxFileSize)}</span>
                 <span className="text-muted-foreground">Max expiry</span>
-                <span className="text-right text-foreground">{user.limits.max_expiry_days}d</span>
+                <span className="text-right text-foreground">{user.limits.maxExpiryDays}d</span>
                 <span className="text-muted-foreground">API req / mo</span>
-                <span className="text-right text-foreground">{user.limits.api_requests.toLocaleString()}</span>
+                <span className="text-right text-foreground">{user.limits.apiRequests.toLocaleString()}</span>
               </div>
             </div>
             {/* Upgrade CTA for free tier */}

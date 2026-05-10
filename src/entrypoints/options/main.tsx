@@ -1,10 +1,9 @@
 import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
-import { getApiKey, setApiKey, getBaseUrl, setBaseUrl, getSyncDropKeys, setSyncDropKeys, getTheme, setTheme, getIgnoredSites, addIgnoredSite, removeIgnoredSite } from "../../lib/storage";
-import { apiGet } from "../../lib/api";
+import { getApiKey, setApiKey, getBaseUrl, setBaseUrl, getTheme, setTheme, getIgnoredSites, addIgnoredSite, removeIgnoredSite } from "../../lib/storage";
+import { ensureBaseUrlPermission } from "../../lib/permissions";
 import { DEFAULT_BASE_URL, EXTENSION_VERSION } from "../../lib/constants";
-import type { User } from "../../lib/types";
-import { Toggle } from "../../components/ui/Toggle";
+import { getUserProfile } from "../../lib/service";
 import { ErrorBoundary } from "../../components/ui/ErrorBoundary";
 import "../../assets/tailwind.css";
 
@@ -15,19 +14,37 @@ function OptionsPage() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [saved, setSaved] = useState(false);
-  const [syncDropKeys, setSyncDropKeysState] = useState(true);
   const [themeState, setThemeState] = useState<"light" | "dark" | null>(null);
   const [ignoredSites, setIgnoredSitesState] = useState<string[]>([]);
   const [newIgnoredSite, setNewIgnoredSite] = useState("");
 
+  function normalizeBaseUrl(value: string): string {
+    const parsed = new URL(value.trim() || DEFAULT_BASE_URL);
+    if (!/^https?:$/.test(parsed.protocol)) {
+      throw new Error("Base URL must use http or https");
+    }
+
+    const pathname = parsed.pathname.replace(/\/$/, "");
+    return pathname ? `${parsed.origin}${pathname}` : parsed.origin;
+  }
+
+  async function prepareBaseUrl(interactive: boolean): Promise<string> {
+    const normalized = normalizeBaseUrl(baseUrl);
+    const granted = await ensureBaseUrlPermission(normalized, interactive);
+    if (!granted) {
+      throw new Error("Extension access to that origin was not granted");
+    }
+
+    return normalized;
+  }
+
   useEffect(() => {
     (async () => {
-      const [key, url, sync, theme, ignored] = await Promise.all([
-        getApiKey(), getBaseUrl(), getSyncDropKeys(), getTheme(), getIgnoredSites(),
+      const [key, url, theme, ignored] = await Promise.all([
+        getApiKey(), getBaseUrl(), getTheme(), getIgnoredSites(),
       ]);
       if (key) setApiKeyState(key);
       if (url) setBaseUrlState(url);
-      setSyncDropKeysState(sync);
       setThemeState(theme);
       setIgnoredSitesState(ignored);
       if (theme) {
@@ -40,11 +57,18 @@ function OptionsPage() {
     e.preventDefault();
     setSaving(true);
     try {
+      const normalizedBaseUrl = await prepareBaseUrl(true);
       await setApiKey(apiKey.trim());
-      await setBaseUrl(baseUrl.trim() || DEFAULT_BASE_URL);
-      await setSyncDropKeys(syncDropKeys);
+      await setBaseUrl(normalizedBaseUrl);
+      setBaseUrlState(normalizedBaseUrl);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
+      setTestResult(null);
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : "Failed to save settings",
+      });
     } finally {
       setSaving(false);
     }
@@ -54,12 +78,14 @@ function OptionsPage() {
     setTesting(true);
     setTestResult(null);
     try {
+      const normalizedBaseUrl = await prepareBaseUrl(true);
       await setApiKey(apiKey.trim());
-      await setBaseUrl(baseUrl.trim() || DEFAULT_BASE_URL);
-      const result = await apiGet<User>("/api/v1/me");
+      await setBaseUrl(normalizedBaseUrl);
+      setBaseUrlState(normalizedBaseUrl);
+      const result = await getUserProfile();
       setTestResult({
         ok: true,
-        message: `Connected as ${result.data.email} (${result.data.tier})`,
+        message: `Connected as ${result.email} (${result.tier})`,
       });
     } catch (err) {
       setTestResult({
@@ -129,12 +155,12 @@ function OptionsPage() {
               <p className="text-xs text-muted-foreground mt-1.5">
                 Generate at{" "}
                 <a
-                  href="https://anon.li/dashboard/settings"
+                  href="https://anon.li/dashboard/api-keys"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="underline underline-offset-2 hover:text-foreground transition-colors"
                 >
-                  anon.li/dashboard/settings
+                  anon.li/dashboard/api-keys
                 </a>
               </p>
             </div>
@@ -154,16 +180,6 @@ function OptionsPage() {
               <p className="text-xs text-muted-foreground mt-1.5">
                 Only change if self-hosting
               </p>
-            </div>
-
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-medium text-foreground">Sync encryption keys</p>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Capture drop decryption keys when visiting drop pages
-                </p>
-              </div>
-              <Toggle checked={syncDropKeys} onChange={() => setSyncDropKeysState((v) => !v)} />
             </div>
 
             {/* Ignored sites */}

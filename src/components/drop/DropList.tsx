@@ -2,16 +2,17 @@
 import { useState, useRef, useEffect } from "preact/hooks";
 import { Button } from "../ui/Button";
 import { Toggle } from "../ui/Toggle";
-import { apiPatch, apiDelete } from "../../lib/api";
 import { copyToClipboard, formatExpiry, formatDate, truncate } from "../../lib/utils";
 import { getBaseUrl, removeDropKey } from "../../lib/storage";
 import { toUserMessage } from "../../lib/errors";
 import type { Drop } from "../../lib/types";
 import type { ToastAction } from "../ui/Toast";
+import { deleteDrop, toggleDrop } from "../../lib/service";
 
 interface DropListProps {
   drops: Drop[];
   dropKeys: Record<string, string>;
+  vaultStatus: "locked" | "unlocking" | "unlocked";
   focusedIndex?: number;
   onUpdate: (drop: Drop) => void;
   onDelete: (id: string) => void;
@@ -20,7 +21,7 @@ interface DropListProps {
   onOpenQr?: (drop: Drop, url: string) => void;
 }
 
-export function DropList({ drops, dropKeys, focusedIndex = -1, onUpdate, onDelete, onError, onSuccess, onOpenQr }: DropListProps) {
+export function DropList({ drops, dropKeys, vaultStatus, focusedIndex = -1, onUpdate, onDelete, onError, onSuccess, onOpenQr }: DropListProps) {
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -49,8 +50,8 @@ export function DropList({ drops, dropKeys, focusedIndex = -1, onUpdate, onDelet
   async function handleToggle(drop: Drop) {
     setToggling(drop.id);
     try {
-      const result = await apiPatch<{ disabled: boolean }>(`/api/v1/drop/${drop.id}?action=toggle`, {});
-      onUpdate({ ...drop, disabled: result.data.disabled });
+      const result = await toggleDrop(drop.id);
+      onUpdate({ ...drop, disabled: result.disabled });
     } catch (err) {
       const msg = toUserMessage(err);
       onError(msg.message, msg.action);
@@ -68,9 +69,9 @@ export function DropList({ drops, dropKeys, focusedIndex = -1, onUpdate, onDelet
     setDeleting(drop.id);
     setConfirmDelete(null);
     try {
-      await apiDelete(`/api/v1/drop/${drop.id}`);
+      await deleteDrop(drop.id);
       onDelete(drop.id);
-      removeDropKey(drop.id);
+      await removeDropKey(drop.id);
       onSuccess("Drop deleted");
     } catch (err) {
       const msg = toUserMessage(err);
@@ -83,22 +84,26 @@ export function DropList({ drops, dropKeys, focusedIndex = -1, onUpdate, onDelet
   async function handleCopy(drop: Drop) {
     const baseUrl = await getBaseUrl();
     const key = dropKeys[drop.id];
-    const url = key ? `${baseUrl}/d/${drop.id}#${key}` : `${baseUrl}/d/${drop.id}`;
+    const url = !drop.customKey && key ? `${baseUrl}/d/${drop.id}#${key}` : `${baseUrl}/d/${drop.id}`;
     await copyToClipboard(url);
-    onSuccess(key ? "URL with key copied" : "URL copied (no key — visit the drop page to capture it)");
+    if (drop.customKey) {
+      onSuccess("Password-protected URL copied");
+      return;
+    }
+    onSuccess(key ? "URL with key copied" : "URL copied — key unavailable in vault");
   }
 
   async function handleOpen(drop: Drop) {
     const baseUrl = await getBaseUrl();
     const key = dropKeys[drop.id];
-    const url = key ? `${baseUrl}/d/${drop.id}#${key}` : `${baseUrl}/d/${drop.id}`;
+    const url = !drop.customKey && key ? `${baseUrl}/d/${drop.id}#${key}` : `${baseUrl}/d/${drop.id}`;
     await browser.tabs.create({ url });
   }
 
   async function handleQr(drop: Drop) {
     const baseUrl = await getBaseUrl();
     const key = dropKeys[drop.id];
-    const url = key ? `${baseUrl}/d/${drop.id}#${key}` : `${baseUrl}/d/${drop.id}`;
+    const url = !drop.customKey && key ? `${baseUrl}/d/${drop.id}#${key}` : `${baseUrl}/d/${drop.id}`;
     if (onOpenQr) onOpenQr(drop, url);
   }
 
@@ -203,21 +208,15 @@ export function DropList({ drops, dropKeys, focusedIndex = -1, onUpdate, onDelet
               <span>{drop.fileCount} file{drop.fileCount !== 1 ? "s" : ""}</span>
               <span>{drop.downloadCount} downloads</span>
               {drop.expiresAt && <span>{formatExpiry(drop.expiresAt)}</span>}
+              {drop.customKey && <span>Password protected</span>}
               {drop.disabled && <span className="text-destructive/70">Disabled</span>}
             </div>
 
             {/* Missing key banner */}
-            {!hasKey && (
+            {!drop.customKey && !hasKey && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-md px-2 py-1.5">
                 <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" className="shrink-0"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
-                <span>No key stored</span>
-                <button
-                  type="button"
-                  onClick={() => handleOpen(drop)}
-                  className="ml-auto text-primary hover:underline underline-offset-2 font-medium"
-                >
-                  Open to capture ↗
-                </button>
+                <span>{vaultStatus === "unlocked" ? "Key not in vault" : "Unlock vault to load key"}</span>
               </div>
             )}
           </div>

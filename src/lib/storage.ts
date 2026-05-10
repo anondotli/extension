@@ -1,5 +1,26 @@
 import { DEFAULT_BASE_URL } from "./constants";
+import { storageKey } from "./cache";
 import type { User } from "./types";
+
+const STORAGE_SCHEMA_VERSION = 3;
+const STORAGE_SCHEMA_VERSION_KEY = "storageSchemaVersion";
+
+async function migrateStorageIfNeeded(): Promise<void> {
+  const result = await browser.storage.local.get(STORAGE_SCHEMA_VERSION_KEY);
+  const currentVersion = result[STORAGE_SCHEMA_VERSION_KEY] as number | undefined;
+
+  if (currentVersion === STORAGE_SCHEMA_VERSION) {
+    return;
+  }
+
+  await browser.storage.local.remove([
+    "cachedUser",
+    storageKey("aliases"),
+    storageKey("drops"),
+    DROP_KEYS_STORAGE_KEY,
+  ]);
+  await browser.storage.local.set({ [STORAGE_SCHEMA_VERSION_KEY]: STORAGE_SCHEMA_VERSION });
+}
 
 export async function getApiKey(): Promise<string | null> {
   const result = await browser.storage.local.get("apiKey");
@@ -48,7 +69,15 @@ export async function getCachedUser(): Promise<User | null> {
 }
 
 export async function setCachedUser(user: User | null): Promise<void> {
-  await browser.storage.local.set({ cachedUser: user ?? null });
+  await browser.storage.local.set({
+    cachedUser: user ?? null,
+    cachedUserAt: user ? Date.now() : null,
+  });
+}
+
+export async function getCachedUserAt(): Promise<number | null> {
+  const result = await browser.storage.local.get("cachedUserAt");
+  return (result.cachedUserAt as number) ?? null;
 }
 
 // ── UI state persistence (tabs, sort, filter) ───────────────────────
@@ -86,15 +115,18 @@ export interface InitialState {
   baseUrl: string;
   theme: "light" | "dark" | null;
   cachedUser: User | null;
+  cachedUserAt: number | null;
   uiState: UiState;
 }
 
 export async function getInitialState(): Promise<InitialState> {
+  await migrateStorageIfNeeded();
   const result = await browser.storage.local.get([
     "apiKey",
     "baseUrl",
     "theme",
     "cachedUser",
+    "cachedUserAt",
     UI_STATE_KEY,
   ]);
   return {
@@ -102,6 +134,7 @@ export async function getInitialState(): Promise<InitialState> {
     baseUrl: (result.baseUrl as string) || DEFAULT_BASE_URL,
     theme: (result.theme as "light" | "dark") || null,
     cachedUser: (result.cachedUser as User) || null,
+    cachedUserAt: (result.cachedUserAt as number) ?? null,
     uiState: { ...DEFAULT_UI_STATE, ...(result[UI_STATE_KEY] as Partial<UiState> ?? {}) },
   };
 }
@@ -125,15 +158,6 @@ export async function removeDropKey(dropId: string): Promise<void> {
   const keys = await getDropKeys();
   delete keys[dropId];
   await browser.storage.local.set({ [DROP_KEYS_STORAGE_KEY]: keys });
-}
-
-export async function getSyncDropKeys(): Promise<boolean> {
-  const result = await browser.storage.local.get("syncDropKeys");
-  return (result.syncDropKeys as boolean) ?? true;
-}
-
-export async function setSyncDropKeys(enabled: boolean): Promise<void> {
-  await browser.storage.local.set({ syncDropKeys: enabled });
 }
 
 // ── Ignored sites ────────────────────────────────────────────────────

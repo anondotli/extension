@@ -1,11 +1,11 @@
-
 import { useState, useRef, useEffect } from "preact/hooks";
 import { Toggle } from "../ui/Toggle";
 import { Input } from "../ui/Input";
 import { Menu } from "../ui/Menu";
-import { apiPatch, apiDelete } from "../../lib/api";
 import { copyToClipboard } from "../../lib/utils";
 import { toUserMessage } from "../../lib/errors";
+import { buildEncryptedAliasPatch, hydrateAliasMetadata } from "../../lib/alias-metadata";
+import { deleteAlias, updateAlias } from "../../lib/service";
 import type { Alias } from "../../lib/types";
 import type { ToastAction } from "../ui/Toast";
 
@@ -14,13 +14,26 @@ interface AliasListProps {
   hasSearch?: boolean;
   onClearSearch?: () => void;
   focusedIndex?: number;
+  vaultStatus: "locked" | "unlocking" | "unlocked";
+  onRequireVault: (action?: () => Promise<void>) => void;
   onUpdate: (alias: Alias) => void;
   onDelete: (id: string) => void;
   onError: (msg: string, action?: ToastAction) => void;
   onSuccess: (msg: string) => void;
 }
 
-export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIndex = -1, onUpdate, onDelete, onError, onSuccess }: AliasListProps) {
+export function AliasList({
+  aliases,
+  hasSearch = false,
+  onClearSearch,
+  focusedIndex = -1,
+  vaultStatus,
+  onRequireVault,
+  onUpdate,
+  onDelete,
+  onError,
+  onSuccess,
+}: AliasListProps) {
   const [toggling, setToggling] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
@@ -35,18 +48,11 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const itemElRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  // Scroll focused item into view
   useEffect(() => {
     if (focusedIndex >= 0 && focusedIndex < aliases.length) {
       itemElRefs.current[focusedIndex]?.scrollIntoView({ block: "nearest" });
     }
   }, [focusedIndex, aliases.length]);
-
-  function startConfirmDelete(id: string) {
-    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
-    setConfirmDelete(id);
-    confirmTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
-  }
 
   useEffect(() => {
     return () => {
@@ -54,6 +60,12 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
       if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
     };
   }, []);
+
+  function startConfirmDelete(id: string) {
+    if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
+    setConfirmDelete(id);
+    confirmTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
+  }
 
   function startEdit(alias: Alias) {
     setEditing(alias.id);
@@ -85,13 +97,30 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
     onSuccess("Copied!");
   }
 
+  async function saveEncryptedField(alias: Alias, field: "label" | "note", value: string) {
+    const payload = await buildEncryptedAliasPatch(alias.id, {
+      [field]: value.trim() || null,
+    });
+    const updated = await updateAlias(alias.id, payload);
+    return hydrateAliasMetadata(updated);
+  }
+
   async function saveNote(alias: Alias) {
+    if (vaultStatus !== "unlocked" && editNote.trim()) {
+      onRequireVault(async () => {
+        const updatedAlias = await saveEncryptedField(alias, "note", editNote);
+        setEditingNote(null);
+        setEditNote("");
+        onUpdate(updatedAlias);
+        onSuccess("Note updated");
+      });
+      return;
+    }
+
     setSavingNote(alias.id);
     try {
-      const result = await apiPatch<Alias>(`/api/v1/alias/${alias.id}`, {
-        note: editNote.trim() || null,
-      });
-      onUpdate(result.data);
+      const updatedAlias = await saveEncryptedField(alias, "note", editNote);
+      onUpdate(updatedAlias);
       setEditingNote(null);
       setEditNote("");
       onSuccess("Note updated");
@@ -104,12 +133,21 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
   }
 
   async function saveLabel(alias: Alias) {
+    if (vaultStatus !== "unlocked" && editLabel.trim()) {
+      onRequireVault(async () => {
+        const updatedAlias = await saveEncryptedField(alias, "label", editLabel);
+        setEditing(null);
+        setEditLabel("");
+        onUpdate(updatedAlias);
+        onSuccess("Label updated");
+      });
+      return;
+    }
+
     setSavingLabel(alias.id);
     try {
-      const result = await apiPatch<Alias>(`/api/v1/alias/${alias.id}`, {
-        label: editLabel.trim() || null,
-      });
-      onUpdate(result.data);
+      const updatedAlias = await saveEncryptedField(alias, "label", editLabel);
+      onUpdate(updatedAlias);
       setEditing(null);
       setEditLabel("");
       onSuccess("Label updated");
@@ -124,10 +162,10 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
   async function handleToggle(alias: Alias) {
     setToggling(alias.id);
     try {
-      const result = await apiPatch<Alias>(`/api/v1/alias/${alias.id}`, {
+      const updatedAlias = await updateAlias(alias.id, {
         active: !alias.active,
       });
-      onUpdate(result.data);
+      onUpdate(await hydrateAliasMetadata(updatedAlias));
     } catch (err) {
       const msg = toUserMessage(err);
       onError(msg.message, msg.action);
@@ -141,11 +179,13 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
       startConfirmDelete(alias.id);
       return;
     }
+
     if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current);
     setDeleting(alias.id);
     setConfirmDelete(null);
+
     try {
-      await apiDelete(`/api/v1/alias/${alias.id}`);
+      await deleteAlias(alias.id);
       onDelete(alias.id);
       onSuccess("Alias deleted");
     } catch (err) {
@@ -173,6 +213,7 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
         </div>
       );
     }
+
     return (
       <div className="flex flex-col items-center justify-center py-10 gap-3 border-2 border-dashed border-border/60 rounded-xl text-center">
         <p className="text-sm text-muted-foreground">No aliases yet</p>
@@ -212,10 +253,15 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
                 {alias.label}
               </span>
             )}
+            {!alias.label && alias.metadataLocked && editing !== alias.id && editingNote !== alias.id && (
+              <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground/70">
+                Vault locked
+              </span>
+            )}
             <div className="flex items-center gap-1 shrink-0 ml-auto">
               <Toggle
                 checked={alias.active}
-                onChange={() => handleToggle(alias)}
+                onChange={() => void handleToggle(alias)}
                 loading={toggling === alias.id}
               />
               {confirmDelete === alias.id ? (
@@ -224,7 +270,7 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
                     type="button"
                     className="shrink-0 px-2 py-0.5 rounded text-xs font-medium bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50"
                     disabled={deleting === alias.id}
-                    onClick={() => handleDelete(alias)}
+                    onClick={() => void handleDelete(alias)}
                     aria-label="Confirm delete alias"
                   >
                     {deleting === alias.id ? "…" : "Delete?"}
@@ -253,7 +299,7 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
                     {
                       label: "Delete",
                       variant: "destructive",
-                      onClick: () => handleDelete(alias),
+                      onClick: () => void handleDelete(alias),
                     },
                   ]}
                 />
@@ -261,7 +307,6 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
             </div>
           </div>
 
-          {/* Note display (when not editing) */}
           {alias.note && editing !== alias.id && editingNote !== alias.id && (
             <p className="text-xs text-muted-foreground/70 truncate pl-0.5">{alias.note}</p>
           )}
@@ -271,10 +316,10 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
               <Input
                 value={editLabel}
                 onInput={(e) => setEditLabel((e.target as HTMLInputElement).value)}
-                placeholder="Label (optional)"
+                placeholder="Encrypted label"
                 class="flex-1 h-7 text-xs"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") saveLabel(alias);
+                  if (e.key === "Enter") void saveLabel(alias);
                   else if (e.key === "Escape") cancelEdit();
                 }}
               />
@@ -282,7 +327,7 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
                 type="button"
                 className="shrink-0 p-1 rounded text-muted-foreground hover:text-green-500 transition-colors disabled:opacity-50"
                 disabled={savingLabel === alias.id}
-                onClick={() => saveLabel(alias)}
+                onClick={() => void saveLabel(alias)}
                 title="Save label"
                 aria-label="Save label"
               >
@@ -299,15 +344,16 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
               </button>
             </div>
           )}
+
           {editingNote === alias.id && (
             <div className="flex gap-1 items-center">
               <Input
                 value={editNote}
                 onInput={(e) => setEditNote((e.target as HTMLInputElement).value)}
-                placeholder="Note (optional)"
+                placeholder="Encrypted note"
                 class="flex-1 h-7 text-xs"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") saveNote(alias);
+                  if (e.key === "Enter") void saveNote(alias);
                   else if (e.key === "Escape") cancelEditNote();
                 }}
               />
@@ -315,7 +361,7 @@ export function AliasList({ aliases, hasSearch = false, onClearSearch, focusedIn
                 type="button"
                 className="shrink-0 p-1 rounded text-muted-foreground hover:text-green-500 transition-colors disabled:opacity-50"
                 disabled={savingNote === alias.id}
-                onClick={() => saveNote(alias)}
+                onClick={() => void saveNote(alias)}
                 title="Save note"
                 aria-label="Save note"
               >

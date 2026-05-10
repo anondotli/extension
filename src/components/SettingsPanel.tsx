@@ -1,9 +1,9 @@
 
 import { useState, useEffect, useCallback } from "preact/hooks";
-import { getApiKey, setApiKey, getBaseUrl, setBaseUrl, getSyncDropKeys, setSyncDropKeys, getIgnoredSites, addIgnoredSite, removeIgnoredSite, getAliasSettings, setAliasSettings } from "../lib/storage";
-import { apiGet, apiGetList } from "../lib/api";
+import { getApiKey, setApiKey, getBaseUrl, setBaseUrl, getIgnoredSites, addIgnoredSite, removeIgnoredSite, getAliasSettings, setAliasSettings } from "../lib/storage";
+import { ensureBaseUrlPermission } from "../lib/permissions";
 import { DEFAULT_BASE_URL, EXTENSION_VERSION } from "../lib/constants";
-import type { User, Domain } from "../lib/types";
+import { getUserProfile, listDomains } from "../lib/service";
 import { Toggle } from "./ui/Toggle";
 
 interface SettingsPanelProps {
@@ -19,7 +19,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [saved, setSaved] = useState(false);
   const [apiKeyError, setApiKeyError] = useState<string | null>(null);
-  const [syncDropKeys, setSyncDropKeysState] = useState(true);
   const [ignoredSites, setIgnoredSitesState] = useState<string[]>([]);
   const [newIgnoredSite, setNewIgnoredSite] = useState("");
   const [confirmClear, setConfirmClear] = useState(false);
@@ -27,22 +26,41 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [availableDomains, setAvailableDomains] = useState<string[]>(["anon.li"]);
   const [defaultFormat, setDefaultFormat] = useState<"random" | "custom">("random");
 
+  function normalizeBaseUrl(value: string): string {
+    const parsed = new URL(value.trim() || DEFAULT_BASE_URL);
+    if (!/^https?:$/.test(parsed.protocol)) {
+      throw new Error("Base URL must use http or https");
+    }
+
+    const pathname = parsed.pathname.replace(/\/$/, "");
+    return pathname ? `${parsed.origin}${pathname}` : parsed.origin;
+  }
+
+  async function prepareBaseUrl(interactive: boolean): Promise<string> {
+    const normalized = normalizeBaseUrl(baseUrl);
+    const granted = await ensureBaseUrlPermission(normalized, interactive);
+    if (!granted) {
+      throw new Error("Extension access to that origin was not granted");
+    }
+
+    return normalized;
+  }
+
   useEffect(() => {
     (async () => {
-      const [key, url, sync, ignored, aliasSettings] = await Promise.all([getApiKey(), getBaseUrl(), getSyncDropKeys(), getIgnoredSites(), getAliasSettings()]);
+      const [key, url, ignored, aliasSettings] = await Promise.all([getApiKey(), getBaseUrl(), getIgnoredSites(), getAliasSettings()]);
       if (key) {
         setApiKeyState(key);
         setOriginalApiKey(key);
       }
       if (url) setBaseUrlState(url);
-      setSyncDropKeysState(sync);
       setIgnoredSitesState(ignored);
       setDefaultDomain(aliasSettings.domain);
       setDefaultFormat(aliasSettings.defaultFormat ?? "random");
 
       try {
-        const domains = await apiGetList<Domain>("/api/v1/domain");
-        const verified = domains.data.filter((d) => d.verified).map((d) => d.domain);
+        const domains = await listDomains();
+        const verified = domains.filter((domain) => domain.verified).map((domain) => domain.domain);
         setAvailableDomains(["anon.li", ...verified]);
       } catch {
         setAvailableDomains(["anon.li"]);
@@ -80,14 +98,22 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     setConfirmClear(false);
     setSaving(true);
     try {
+      const normalizedBaseUrl = await prepareBaseUrl(true);
       await Promise.all([
         setApiKey(trimmed),
-        setBaseUrl(baseUrl.trim() || DEFAULT_BASE_URL),
-        setSyncDropKeys(syncDropKeys),
+        setBaseUrl(normalizedBaseUrl),
         setAliasSettings({ domain: defaultDomain, defaultFormat }),
       ]);
+      setBaseUrlState(normalizedBaseUrl);
       setOriginalApiKey(trimmed);
       setSaved(true);
+      setTestResult(null);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        message: err instanceof Error ? err.message : "Failed to save settings",
+      });
     } finally {
       setSaving(false);
     }
@@ -103,12 +129,14 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     setTesting(true);
     setTestResult(null);
     try {
+      const normalizedBaseUrl = await prepareBaseUrl(true);
       await setApiKey(trimmed);
-      await setBaseUrl(baseUrl.trim() || DEFAULT_BASE_URL);
-      const result = await apiGet<User>("/api/v1/me");
+      await setBaseUrl(normalizedBaseUrl);
+      setBaseUrlState(normalizedBaseUrl);
+      const result = await getUserProfile();
       setTestResult({
         ok: true,
-        message: `Connected as ${result.data.email} (${result.data.tier})`,
+        message: `Connected as ${result.email} (${result.tier})`,
       });
     } catch (err) {
       setTestResult({
@@ -161,12 +189,12 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             <p className="text-xs text-muted-foreground mt-1.5">
               Generate at{" "}
               <a
-                href="https://anon.li/dashboard/settings"
+                href="https://anon.li/dashboard/api-keys"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline underline-offset-2 hover:text-foreground transition-colors"
               >
-                anon.li/dashboard/settings
+                anon.li/dashboard/api-keys
               </a>
             </p>
           </div>
@@ -216,16 +244,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               </p>
             </div>
             <Toggle checked={defaultFormat === "custom"} onChange={() => { setDefaultFormat((f) => f === "random" ? "custom" : "random"); setSaved(false); }} />
-          </div>
-
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-medium text-foreground">Sync encryption keys</p>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Capture drop decryption keys when visiting drop pages
-              </p>
-            </div>
-            <Toggle checked={syncDropKeys} onChange={() => setSyncDropKeysState((v) => !v)} />
           </div>
 
           {/* Ignored sites */}

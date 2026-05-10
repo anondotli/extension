@@ -4,17 +4,22 @@ import { AliasTab } from "./tabs/AliasTab";
 import { DropTab } from "./tabs/DropTab";
 import { AccountPanel } from "./tabs/AccountTab";
 import { SettingsPanel } from "./SettingsPanel";
+import { VaultPanel } from "./VaultPanel";
+import { VaultUnlockScreen } from "./VaultUnlockScreen";
+import { VaultSetupPrompt } from "./VaultSetupPrompt";
 import { LogoSpinner } from "./ui/LogoSpinner";
 import { Button } from "./ui/Button";
 import { ShortcutsHelp } from "./ui/ShortcutsHelp";
 import { ToastContainer, useToast } from "./ui/Toast";
 import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
-import { apiGet } from "../lib/api";
 import { getInitialState, setCachedUser, setTheme, setUiState, setApiKey, setBaseUrl } from "../lib/storage";
 import { formatBytes } from "../lib/utils";
 import { DEFAULT_BASE_URL, EXTENSION_VERSION } from "../lib/constants";
 import type { User } from "../lib/types";
 import type { ToastAction } from "./ui/Toast";
+import { getUserProfile } from "../lib/service";
+import { getVaultStorageSupport } from "../lib/vault/storage-support";
+import { lockExtensionVault, restoreTrustedExtensionVault, unlockExtensionVault } from "../lib/vault";
 
 type Tab = "alias" | "drop";
 
@@ -36,12 +41,19 @@ export function App() {
   const [theme, setThemeState] = useState<"light" | "dark" | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
+  const [showVault, setShowVault] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [aliasCount, setAliasCount] = useState<number | null>(null);
   const [dropCount, setDropCount] = useState<number | null>(null);
+  const [vaultStatus, setVaultStatus] = useState<"locked" | "unlocking" | "unlocked">("locked");
+  const [vaultRestoring, setVaultRestoring] = useState(false);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [refreshingProfile, setRefreshingProfile] = useState(false);
+  const [baseUrl, setBaseUrlState] = useState(DEFAULT_BASE_URL);
   const { items: toasts, show: showToast, dismiss: dismissToast } = useToast();
 
   const popupActions = useRef<PopupActions>({});
+  const vaultSupport = useMemo(() => getVaultStorageSupport(), []);
 
   const handleShowError = useCallback((msg: string, action?: ToastAction) => {
     showToast(msg, "error", action);
@@ -63,14 +75,23 @@ export function App() {
         if (showShortcuts) setShowShortcuts(false);
         else if (showSettings) setShowSettings(false);
         else if (showAccount) setShowAccount(false);
+        else if (showVault) setShowVault(false);
       }
     }
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [showSettings, showAccount, showShortcuts]);
+  }, [showSettings, showAccount, showShortcuts, showVault]);
 
   // Whether the main tabbed UI is showing (shortcuts only active here)
-  const mainUIActive = !authLoading && hasApiKey && !showSettings && !showAccount;
+  const mainUIActive =
+    !authLoading &&
+    hasApiKey &&
+    !!user?.vaultConfigured &&
+    vaultStatus === "unlocked" &&
+    !vaultRestoring &&
+    !showSettings &&
+    !showAccount &&
+    !showVault;
 
   const shortcutMap = useMemo(
     () => ({
@@ -103,6 +124,7 @@ export function App() {
     }
 
     setHasApiKey(!!state.apiKey);
+    setBaseUrlState(state.baseUrl);
 
     // Restore last active tab (URL param takes precedence)
     if (_initialTab) {
@@ -119,12 +141,18 @@ export function App() {
     if (state.cachedUser) {
       setUser(state.cachedUser);
       setAuthLoading(false);
-      refreshUser();
+      await maybeRestoreVault(state.cachedUser);
+      const userIsFresh =
+        state.cachedUserAt !== null && Date.now() - state.cachedUserAt < 15 * 60 * 1000;
+      if (!userIsFresh) {
+        void refreshUser();
+      }
     } else {
       try {
-        const result = await apiGet<User>("/api/v1/me");
-        setUser(result.data);
-        await setCachedUser(result.data);
+        const nextUser = await getUserProfile();
+        setUser(nextUser);
+        await setCachedUser(nextUser);
+        await maybeRestoreVault(nextUser);
       } catch {
         // Invalid API key or network error
       } finally {
@@ -133,14 +161,80 @@ export function App() {
     }
   }
 
+  async function maybeRestoreVault(nextUser: User | null) {
+    if (!nextUser?.vaultConfigured) {
+      return;
+    }
+
+    setVaultRestoring(true);
+    try {
+      const restored = await restoreTrustedExtensionVault();
+      if (restored) {
+        setVaultStatus("unlocked");
+        setVaultError(null);
+      }
+    } finally {
+      setVaultRestoring(false);
+    }
+  }
+
   async function refreshUser() {
     try {
-      const result = await apiGet<User>("/api/v1/me");
-      setUser(result.data);
-      await setCachedUser(result.data);
+      const nextUser = await getUserProfile();
+      setUser(nextUser);
+      await setCachedUser(nextUser);
+      if (vaultStatus !== "unlocked") {
+        await maybeRestoreVault(nextUser);
+      }
     } catch {
       // Keep showing cached data on failure
     }
+  }
+
+  async function handleRefreshAfterVaultSetup() {
+    setRefreshingProfile(true);
+    try {
+      const nextUser = await getUserProfile();
+      setUser(nextUser);
+      await setCachedUser(nextUser);
+      await maybeRestoreVault(nextUser);
+    } catch {
+      // Surface as no-op; user can retry.
+    } finally {
+      setRefreshingProfile(false);
+    }
+  }
+
+  const requireVault = useCallback((action?: () => Promise<void>) => {
+    if (vaultStatus === "unlocked" && action) {
+      void action();
+    }
+    // Vault is gated at app load, so locked is not reachable from here in practice.
+  }, [vaultStatus]);
+
+  async function handleVaultUnlock(password: string, trustBrowser: boolean) {
+    if (!user) {
+      return;
+    }
+
+    setVaultStatus("unlocking");
+    setVaultError(null);
+
+    try {
+      await unlockExtensionVault(user.email, password, trustBrowser);
+      setVaultStatus("unlocked");
+      setShowVault(false);
+    } catch (error) {
+      setVaultStatus("locked");
+      setVaultError(error instanceof Error ? error.message : "Vault unlock failed");
+      throw error;
+    }
+  }
+
+  async function handleVaultLock() {
+    await lockExtensionVault();
+    setVaultStatus("locked");
+    setVaultError(null);
   }
 
   async function toggleTheme() {
@@ -167,6 +261,13 @@ export function App() {
     return count !== null ? `${name} (${count})` : name;
   };
 
+  const onboardingComplete =
+    !authLoading &&
+    hasApiKey &&
+    !!user?.vaultConfigured &&
+    vaultStatus === "unlocked" &&
+    !vaultRestoring;
+
   return (
     <div className="flex flex-col h-full bg-background">
       {/* Header */}
@@ -178,7 +279,7 @@ export function App() {
           <span className="font-medium text-sm tracking-tight text-foreground">anon.li</span>
         </div>
         <div className="flex items-center gap-1">
-          {user && (
+          {onboardingComplete && (
             <button
               type="button"
               onClick={() => { setShowSettings(false); setShowAccount((s) => !s); }}
@@ -190,6 +291,27 @@ export function App() {
                 <circle cx="12" cy="8" r="4" />
                 <path d="M20 21a8 8 0 1 0-16 0" />
               </svg>
+            </button>
+          )}
+          {onboardingComplete && (
+            <button
+              type="button"
+              onClick={() => { setShowAccount(false); setShowSettings(false); setShowVault((s) => !s); }}
+              className={`transition-colors ${vaultStatus === "unlocked" ? "text-success" : "text-muted-foreground hover:text-foreground"}`}
+              title={vaultStatus === "unlocked" ? "Vault unlocked" : "Unlock vault"}
+              aria-label={vaultStatus === "unlocked" ? "Vault unlocked" : "Unlock vault"}
+            >
+              {vaultStatus === "unlocked" ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="11" width="18" height="10" rx="2" />
+                  <path d="M7 11V8a5 5 0 0 1 9.8-1.4" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="11" width="18" height="10" rx="2" />
+                  <path d="M7 11V8a5 5 0 0 1 10 0v3" />
+                </svg>
+              )}
             </button>
           )}
           <button
@@ -229,14 +351,44 @@ export function App() {
       <main className="flex-1 overflow-hidden flex flex-col">
         {showSettings ? (
           <SettingsPanel onClose={() => { setShowSettings(false); init(); }} />
-        ) : showAccount ? (
+        ) : showAccount && onboardingComplete ? (
           <AccountPanel user={user} onClose={() => setShowAccount(false)} />
-        ) : authLoading ? (
+        ) : showVault && onboardingComplete && user ? (
+          <VaultPanel
+            email={user.email}
+            supported={vaultSupport.vault}
+            trustSupported={vaultSupport.trustedBrowser}
+            status={vaultStatus}
+            error={vaultError}
+            onUnlock={handleVaultUnlock}
+            onLock={handleVaultLock}
+            onClose={() => setShowVault(false)}
+          />
+        ) : authLoading || vaultRestoring ? (
           <div className="flex-1 flex items-center justify-center">
             <LogoSpinner />
           </div>
         ) : !hasApiKey ? (
           <SetupScreen onOpenSettings={() => setShowSettings(true)} onConnect={init} />
+        ) : !user ? (
+          <div className="flex-1 flex items-center justify-center">
+            <LogoSpinner />
+          </div>
+        ) : !user.vaultConfigured ? (
+          <VaultSetupPrompt
+            baseUrl={baseUrl}
+            refreshing={refreshingProfile}
+            onRefresh={handleRefreshAfterVaultSetup}
+          />
+        ) : vaultStatus !== "unlocked" ? (
+          <VaultUnlockScreen
+            email={user.email}
+            supported={vaultSupport.vault}
+            trustSupported={vaultSupport.trustedBrowser}
+            unlocking={vaultStatus === "unlocking"}
+            error={vaultError}
+            onUnlock={handleVaultUnlock}
+          />
         ) : (
           <>
             {/* Tab bar */}
@@ -264,6 +416,8 @@ export function App() {
               {activeTab === "alias" ? (
                 <AliasTab
                   user={user}
+                  vaultStatus={vaultStatus}
+                  onRequireVault={requireVault}
                   onRefreshUser={refreshUser}
                   onError={handleShowError}
                   onSuccess={handleShowSuccess}
@@ -272,6 +426,9 @@ export function App() {
                 />
               ) : (
                 <DropTab
+                  user={user}
+                  vaultStatus={vaultStatus}
+                  onRequireVault={requireVault}
                   onError={handleShowError}
                   onSuccess={handleShowSuccess}
                   onCountChange={setDropCount}
@@ -284,7 +441,7 @@ export function App() {
       </main>
 
       {/* Footer: storage bar */}
-      {user && (
+      {user && onboardingComplete && (
         <footer className="px-4 py-2.5 border-t border-border/40">
           <div className="flex justify-between text-xs text-muted-foreground mb-1.5">
             <span>Storage</span>
@@ -337,7 +494,7 @@ function SetupScreen({ onOpenSettings, onConnect }: SetupScreenProps) {
       await setApiKey(key);
       await setBaseUrl(DEFAULT_BASE_URL);
       // Validate the key by calling the API
-      await apiGet<User>("/api/v1/me");
+      await getUserProfile();
       await onConnect();
     } catch (err) {
       // Clear the invalid key
@@ -403,7 +560,7 @@ function SetupScreen({ onOpenSettings, onConnect }: SetupScreenProps) {
         <div className="flex gap-2">
           <button
             type="button"
-            onClick={() => window.open("https://anon.li/dashboard/settings", "_blank")}
+            onClick={() => window.open(`${DEFAULT_BASE_URL}/dashboard/api-keys`, "_blank")}
             className="flex-1 h-9 px-4 text-xs font-medium rounded-md border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
             Get API Key ↗

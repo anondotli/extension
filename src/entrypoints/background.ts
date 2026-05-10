@@ -1,9 +1,9 @@
 import { defineBackground } from "wxt/utils/define-background";
-import { getApiKey, addIgnoredSite } from "../lib/storage";
-import { apiPost, apiGetList, apiGet } from "../lib/api";
+import { getApiKey, addIgnoredSite, getAliasSettings, setCachedUser } from "../lib/storage";
 import { setCache, getCached } from "../lib/cache";
 import { AuthError } from "../lib/errors";
-import type { Alias, Drop, User } from "../lib/types";
+import type { Alias } from "../lib/types";
+import { getUserProfile, quickCreateAlias } from "../lib/service";
 
 export default defineBackground(() => {
   /** Prepend a newly-created alias to the cache so the popup shows it instantly. */
@@ -25,69 +25,50 @@ export default defineBackground(() => {
     }
   });
 
-  // ── Prefetch & badge ────────────────────────────────────────────────
-  async function prefetchAndBadge() {
+  // ── Badge update ─────────────────────────────────────────────────────
+  // Only fetches /me — list caches are populated by the popup on demand.
+  async function updateBadge() {
     const apiKey = await getApiKey();
     if (!apiKey) return;
 
     try {
-      const [aliasResult, dropResult] = await Promise.all([
-        apiGetList<Alias>("/api/v1/alias?limit=50"),
-        apiGetList<Drop>("/api/v1/drop?limit=25"),
-      ]);
+      const user = await getUserProfile();
+      await setCachedUser(user);
 
-      await Promise.all([
-        setCache("aliases", aliasResult.data, aliasResult.total),
-        setCache("drops", dropResult.data, dropResult.total),
-      ]);
+      const aliasRemaining = user.aliases
+        ? user.aliases.random.limit - user.aliases.random.used
+        : null;
 
-      // Badge: warn when alias quota or storage is running low
-      try {
-        const userResult = await apiGet<User>("/api/v1/me");
-        const user = userResult.data;
+      const storageUsed = Number(user.storage.used);
+      const storageLimit = Number(user.storage.limit);
+      const storagePct = storageLimit > 0 ? storageUsed / storageLimit : 0;
 
-        const aliasRemaining = user.aliases
-          ? user.aliases.random.limit - user.aliases.random.used
-          : null;
-
-        const storageUsed = Number(user.storage.used);
-        const storageLimit = Number(user.storage.limit);
-        const storagePct = storageLimit > 0 ? storageUsed / storageLimit : 0;
-
-        if (aliasRemaining !== null && aliasRemaining <= 0) {
-          // Alias limit hit — most urgent
-          browser.action.setBadgeText({ text: "0" });
-          browser.action.setBadgeBackgroundColor({ color: "#dc2626" });
-        } else if (storagePct >= 0.95) {
-          // Storage almost full — critical for drops
-          browser.action.setBadgeText({ text: "!" });
-          browser.action.setBadgeBackgroundColor({ color: "#dc2626" });
-        } else if (aliasRemaining !== null && aliasRemaining <= 5) {
-          // Alias quota running low
-          browser.action.setBadgeText({ text: String(aliasRemaining) });
-          browser.action.setBadgeBackgroundColor({ color: "#f59e0b" });
-        } else if (storagePct >= 0.8) {
-          // Storage getting full
-          browser.action.setBadgeText({ text: `${Math.round(storagePct * 100)}%` });
-          browser.action.setBadgeBackgroundColor({ color: "#f59e0b" });
-        } else {
-          browser.action.setBadgeText({ text: "" });
-        }
-      } catch {
-        // Non-critical — skip badge update
+      if (aliasRemaining !== null && aliasRemaining <= 0) {
+        browser.action.setBadgeText({ text: "0" });
+        browser.action.setBadgeBackgroundColor({ color: "#dc2626" });
+      } else if (storagePct >= 0.95) {
+        browser.action.setBadgeText({ text: "!" });
+        browser.action.setBadgeBackgroundColor({ color: "#dc2626" });
+      } else if (aliasRemaining !== null && aliasRemaining <= 5) {
+        browser.action.setBadgeText({ text: String(aliasRemaining) });
+        browser.action.setBadgeBackgroundColor({ color: "#f59e0b" });
+      } else if (storagePct >= 0.8) {
+        browser.action.setBadgeText({ text: `${Math.round(storagePct * 100)}%` });
+        browser.action.setBadgeBackgroundColor({ color: "#f59e0b" });
+      } else {
+        browser.action.setBadgeText({ text: "" });
       }
     } catch {
-      // Silently fail
+      // Non-critical
     }
   }
 
-  // Prefetch on startup
-  prefetchAndBadge();
-
-  browser.alarms.create("prefetch", { periodInMinutes: 5 });
+  // One initial poll so the badge is live after install/upgrade, then a slow alarm.
+  updateBadge();
+  browser.alarms.create("badge", { periodInMinutes: 30 });
 
   browser.alarms.onAlarm.addListener((alarm) => {
-    if (alarm.name === "prefetch") prefetchAndBadge();
+    if (alarm.name === "badge") updateBadge();
   });
 
   // ── Clipboard helper (MV3 offscreen) ──────────────────────────────
@@ -195,11 +176,14 @@ export default defineBackground(() => {
       } catch {}
 
       try {
-        const result = await apiPost<Alias>("/api/v1/alias?generate=true", hostname ? { description: hostname } : {});
-        const email = result.data.email;
+        const aliasSettings = await getAliasSettings();
+        const alias = await quickCreateAlias({
+          domain: aliasSettings.domain,
+        });
+        const email = alias.email;
 
         // Update cache so popup shows the new alias instantly
-        pushAliasToCache(result.data).catch(() => {});
+        pushAliasToCache(alias).catch(() => {});
 
         // Try to fill an active input via the content script first
         let filled = false;
@@ -255,15 +239,18 @@ export default defineBackground(() => {
       }
 
       if (type === "GENERATE_ALIAS") {
-        const hostname = (msg as { hostname?: string }).hostname || "";
+        void (msg as { hostname?: string }).hostname;
         (async () => {
           const key = await getApiKey();
           if (!key) return { error: "No API key configured" };
           try {
-            const result = await apiPost<Alias>("/api/v1/alias?generate=true", hostname ? { description: hostname } : {});
+            const aliasSettings = await getAliasSettings();
+            const alias = await quickCreateAlias({
+              domain: aliasSettings.domain,
+            });
             // Update cache so popup shows the new alias instantly
-            await pushAliasToCache(result.data).catch(() => {});
-            return { data: result.data };
+            await pushAliasToCache(alias).catch(() => {});
+            return { data: alias };
           } catch (err) {
             return { error: err instanceof Error ? err.message : "Failed" };
           }

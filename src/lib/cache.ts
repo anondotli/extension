@@ -7,9 +7,9 @@ export interface CacheEntry<T> {
 }
 
 const CACHE_PREFIX = "cache:";
-const TTL_MS = 5 * 60 * 1000; // 5 minutes — aligns with background prefetch interval
+const TTL_MS = 15 * 60 * 1000; // 15 minutes — popup tabs revalidate only when stale
 
-export type CacheKey = "aliases" | "drops";
+export type CacheKey = "aliases" | "drops" | "domains" | "recipients";
 
 export function storageKey(key: CacheKey): string {
   return `${CACHE_PREFIX}${key}`;

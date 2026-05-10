@@ -1,16 +1,17 @@
-
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { Input } from "../ui/Input";
 import { AliasCreate } from "../alias/AliasCreate";
 import { AliasList } from "../alias/AliasList";
 import { AliasListSkeleton } from "../alias/AliasListSkeleton";
-import { apiGetList, apiPost } from "../../lib/api";
 import { copyToClipboard } from "../../lib/utils";
-import { setUiState } from "../../lib/storage";
-import { getCached, setCache, isFresh, storageKey } from "../../lib/cache";
+import { getAliasSettings, setUiState } from "../../lib/storage";
+import { getCached, isFresh, setCache, storageKey } from "../../lib/cache";
 import type { CacheEntry } from "../../lib/cache";
+import type { Domain } from "../../lib/types";
 import { toUserMessage } from "../../lib/errors";
-import type { Alias, User, Domain } from "../../lib/types";
+import { hydrateAliasesMetadata, sanitizeAliasesForStorage } from "../../lib/alias-metadata";
+import { listAliases, listDomains, listRecipients, quickCreateAlias } from "../../lib/service";
+import type { Alias, Recipient, User } from "../../lib/types";
 import type { PopupActions } from "../App";
 import type { ToastAction } from "../ui/Toast";
 
@@ -19,6 +20,8 @@ type SortMode = "newest" | "oldest";
 
 interface AliasTabProps {
   user: User | null;
+  vaultStatus: "locked" | "unlocking" | "unlocked";
+  onRequireVault: (action?: () => Promise<void>) => void;
   onRefreshUser: () => void;
   onError: (msg: string, action?: ToastAction) => void;
   onSuccess: (msg: string) => void;
@@ -26,7 +29,16 @@ interface AliasTabProps {
   popupActions: { current: PopupActions };
 }
 
-export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChange, popupActions }: AliasTabProps) {
+export function AliasTab({
+  user,
+  vaultStatus,
+  onRequireVault,
+  onRefreshUser,
+  onError,
+  onSuccess,
+  onCountChange,
+  popupActions,
+}: AliasTabProps) {
   const [aliases, setAliases] = useState<Alias[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -34,84 +46,93 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
   const [quickCreating, setQuickCreating] = useState(false);
   const [search, setSearch] = useState("");
   const [domains, setDomains] = useState<string[]>([]);
+  const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const searchRef = useRef<HTMLInputElement>(null);
+  const cacheGenRef = useRef(0);
+  const aliasesRef = useRef<Alias[]>([]);
 
   useEffect(() => {
-    loadAliases();
+    void loadSupportData();
+    void loadAliases();
 
-    // Listen for external cache updates (e.g. background creating an alias)
     const sk = storageKey("aliases");
     function onStorageChanged(changes: Record<string, { newValue?: unknown }>) {
       const change = changes[sk];
       if (!change?.newValue) return;
+
       const entry = change.newValue as CacheEntry<Alias[]>;
-      // Only apply if this is a newer generation than what we already have
-      if (entry.generation > cacheGenRef.current) {
-        cacheGenRef.current = entry.generation;
-        setAliases(entry.data);
-      }
+      if (entry.generation <= cacheGenRef.current) return;
+
+      cacheGenRef.current = entry.generation;
+      void hydrateAliasesMetadata(entry.data).then((hydrated) => {
+        setAliases(hydrated);
+      });
     }
+
     browser.storage.onChanged.addListener(onStorageChanged);
     return () => browser.storage.onChanged.removeListener(onStorageChanged);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once on mount
   }, []);
 
   useEffect(() => {
-    if (user?.features.customDomains) {
-      apiGetList<Domain>("/api/v1/domain")
-        .then((result) => {
-          setDomains(result.data.filter((d) => d.verified).map((d) => d.domain));
-        })
-        .catch(() => {});
-    }
-  }, [user]);
+    aliasesRef.current = aliases;
+  }, [aliases]);
 
-  // Escape key cancels creation
-  const handleKeyDown = useCallback((e: KeyboardEvent) => {
-    if (e.key === "Escape" && creating) {
-      setCreating(false);
-    }
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && creating) {
+        setCreating(false);
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
   }, [creating]);
 
   useEffect(() => {
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [handleKeyDown]);
+    let cancelled = false;
 
-  // Compute sorted list (needed for actions)
-  const q = search.toLowerCase();
-  let filtered = q
-    ? aliases.filter(
-        (a) =>
-          a.email?.toLowerCase().includes(q) ||
-          a.label?.toLowerCase().includes(q) ||
-          a.note?.toLowerCase().includes(q) ||
-          a.description?.toLowerCase().includes(q)
-      )
-    : aliases;
+    void hydrateAliasesMetadata(sanitizeAliasesForStorage(aliasesRef.current)).then((hydrated) => {
+      if (!cancelled) {
+        setAliases(hydrated);
+      }
+    });
 
-  if (filterMode === "active") filtered = filtered.filter((a) => a.active);
-  else if (filterMode === "inactive") filtered = filtered.filter((a) => !a.active);
+    return () => {
+      cancelled = true;
+    };
+  }, [vaultStatus]);
 
-  const sorted = [...filtered].sort((a, b) => {
-    const da = new Date(a.createdAt).getTime();
-    const db = new Date(b.createdAt).getTime();
-    return sortMode === "newest" ? db - da : da - db;
-  });
-
-  // Report count changes
   useEffect(() => {
     onCountChange?.(aliases.length);
   }, [aliases.length, onCountChange]);
 
-  // Register popupActions
+  const q = search.toLowerCase();
+  let filtered = q
+    ? aliases.filter(
+        (alias) =>
+          alias.email.toLowerCase().includes(q) ||
+          alias.label?.toLowerCase().includes(q) ||
+          alias.note?.toLowerCase().includes(q),
+      )
+    : aliases;
+
+  if (filterMode === "active") filtered = filtered.filter((alias) => alias.active);
+  if (filterMode === "inactive") filtered = filtered.filter((alias) => !alias.active);
+
+  const sorted = [...filtered].sort((a, b) => {
+    const createdA = new Date(a.createdAt).getTime();
+    const createdB = new Date(b.createdAt).getTime();
+    return sortMode === "newest" ? createdB - createdA : createdA - createdB;
+  });
+
   useEffect(() => {
     popupActions.current = {
       focusSearch: () => searchRef.current?.focus(),
-      toggleCreate: () => setCreating((s) => !s),
+      toggleCreate: () => setCreating((state) => !state),
       navigateList: (dir) => {
         setFocusedIndex((prev) => {
           if (sorted.length === 0) return -1;
@@ -120,47 +141,96 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
         });
       },
       activateItem: () => {
-        if (focusedIndex >= 0 && focusedIndex < sorted.length) {
-          const alias = sorted[focusedIndex];
-          copyToClipboard(alias.email).then(() => onSuccess("Copied!"));
-        }
+        if (focusedIndex < 0 || focusedIndex >= sorted.length) return;
+        void copyToClipboard(sorted[focusedIndex]!.email).then(() => onSuccess("Copied!"));
       },
     };
+
     return () => {
       popupActions.current = {};
     };
-  }, [sorted, focusedIndex, onSuccess, popupActions]);
+  }, [focusedIndex, onSuccess, popupActions, sorted]);
 
-  // Reset focusedIndex when search/filter changes
   useEffect(() => {
     setFocusedIndex(-1);
   }, [search, filterMode, sortMode]);
 
-  // Track cache generation so we can detect external updates
-  const cacheGenRef = useRef(0);
+  async function loadSupportData() {
+    const [cachedDomains, cachedRecipients] = await Promise.all([
+      getCached<Domain[]>("domains"),
+      getCached<Recipient[]>("recipients"),
+    ]);
+
+    if (cachedDomains && isFresh(cachedDomains)) {
+      setDomains(
+        cachedDomains.data
+          .filter((record) => record.verified && record.domain !== "anon.li")
+          .map((record) => record.domain),
+      );
+    }
+    if (cachedRecipients && isFresh(cachedRecipients)) {
+      setRecipients(cachedRecipients.data);
+    }
+
+    if (cachedDomains && isFresh(cachedDomains) && cachedRecipients && isFresh(cachedRecipients)) {
+      return;
+    }
+
+    try {
+      const [domainRecords, recipientRecords] = await Promise.all([
+        listDomains(),
+        listRecipients(),
+      ]);
+      setDomains(
+        domainRecords
+          .filter((record) => record.verified && record.domain !== "anon.li")
+          .map((record) => record.domain),
+      );
+      setRecipients(recipientRecords);
+      await Promise.all([
+        setCache("domains", domainRecords, domainRecords.length),
+        setCache("recipients", recipientRecords, recipientRecords.length),
+      ]);
+    } catch {
+      if (!cachedDomains) setDomains([]);
+      if (!cachedRecipients) setRecipients([]);
+    }
+  }
+
+  async function writeAliases(nextAliases: Alias[], total = nextAliases.length) {
+    setAliases(nextAliases);
+    await setCache("aliases", sanitizeAliasesForStorage(nextAliases), total);
+  }
+
+  async function fetchAliases() {
+    const result = await listAliases(50);
+    const hydrated = await hydrateAliasesMetadata(result.data);
+    await setCache("aliases", sanitizeAliasesForStorage(result.data), result.total);
+    return { aliases: hydrated, total: result.total };
+  }
 
   async function loadAliases() {
-    // Try cache first for instant display
     const cached = await getCached<Alias[]>("aliases");
     if (cached) {
-      setAliases(cached.data);
+      const hydrated = await hydrateAliasesMetadata(cached.data);
+      setAliases(hydrated);
       cacheGenRef.current = cached.generation;
       setLoading(false);
-      // Always revalidate in background to stay fresh
-      revalidateAliases();
+      if (!isFresh(cached)) {
+        void revalidateAliases();
+      }
       return;
     }
 
     setLoading(true);
     try {
-      const result = await apiGetList<Alias>("/api/v1/alias?limit=50");
-      setAliases(result.data);
-      await setCache("aliases", result.data, result.total);
+      const result = await fetchAliases();
+      setAliases(result.aliases);
       const entry = await getCached<Alias[]>("aliases");
       if (entry) cacheGenRef.current = entry.generation;
-    } catch (err) {
-      const msg = toUserMessage(err);
-      onError(msg.message, msg.action);
+    } catch (error) {
+      const message = toUserMessage(error);
+      onError(message.message, message.action);
     } finally {
       setLoading(false);
     }
@@ -169,11 +239,12 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
   async function revalidateAliases() {
     setRefreshing(true);
     try {
-      const result = await apiGetList<Alias>("/api/v1/alias?limit=50");
-      setAliases(result.data);
-      await setCache("aliases", result.data, result.total);
+      const result = await fetchAliases();
+      setAliases(result.aliases);
+      const entry = await getCached<Alias[]>("aliases");
+      if (entry) cacheGenRef.current = entry.generation;
     } catch {
-      // Keep showing cached data on failure
+      // Keep cached data on screen.
     } finally {
       setRefreshing(false);
     }
@@ -182,12 +253,13 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
   async function handleRefresh() {
     setRefreshing(true);
     try {
-      const result = await apiGetList<Alias>("/api/v1/alias?limit=50");
-      setAliases(result.data);
-      await setCache("aliases", result.data, result.total);
-    } catch (err) {
-      const msg = toUserMessage(err);
-      onError(msg.message, msg.action);
+      const result = await fetchAliases();
+      setAliases(result.aliases);
+      const entry = await getCached<Alias[]>("aliases");
+      if (entry) cacheGenRef.current = entry.generation;
+    } catch (error) {
+      const message = toUserMessage(error);
+      onError(message.message, message.action);
     } finally {
       setRefreshing(false);
     }
@@ -196,17 +268,24 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
   async function handleQuickCreate() {
     setQuickCreating(true);
     try {
-      const result = await apiPost<Alias>("/api/v1/alias?generate=true", {});
-      const alias = result.data;
-      const updated = [alias, ...aliases];
-      setAliases(updated);
-      await setCache("aliases", updated, updated.length);
-      await copyToClipboard(alias.email);
-      onSuccess(`Created & copied: ${alias.email}`);
+      const settings = await getAliasSettings();
+      const defaultRecipient = recipients.find((recipient) => recipient.isDefault && recipient.verified)
+        ?? recipients.find((recipient) => recipient.verified);
+
+      const alias = await quickCreateAlias({
+        domain: settings.domain,
+        ...(defaultRecipient ? { recipient_ids: [defaultRecipient.id] } : {}),
+      });
+
+      const hydratedAlias = (await hydrateAliasesMetadata([alias]))[0] ?? alias;
+      const updatedAliases = [hydratedAlias, ...aliases];
+      await writeAliases(updatedAliases);
+      await copyToClipboard(hydratedAlias.email);
+      onSuccess(`Created & copied: ${hydratedAlias.email}`);
       onRefreshUser();
-    } catch (err) {
-      const msg = toUserMessage(err);
-      onError(msg.message, msg.action);
+    } catch (error) {
+      const message = toUserMessage(error);
+      onError(message.message, message.action);
     } finally {
       setQuickCreating(false);
     }
@@ -214,16 +293,14 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
 
   function handleSortChange(mode: SortMode) {
     setSortMode(mode);
-    setUiState({ aliasSort: mode });
+    void setUiState({ aliasSort: mode });
   }
 
   function handleFilterChange(mode: FilterMode) {
     setFilterMode(mode);
-    setUiState({ aliasFilter: mode });
+    void setUiState({ aliasFilter: mode });
   }
 
-
-  // Alias count stats
   const randomLimit = user?.aliases?.random.limit ?? null;
   const randomUsed = user?.aliases?.random.used ?? null;
   const randomRemaining = randomLimit !== null && randomUsed !== null ? randomLimit - randomUsed : null;
@@ -231,19 +308,17 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
 
   return (
     <div className="flex flex-col h-full">
-      {/* Search bar + buttons — always visible */}
       <div className="flex gap-2 mb-2">
         <Input
           ref={searchRef}
           value={search}
-          onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
+          onInput={(event) => setSearch((event.target as HTMLInputElement).value)}
           placeholder="Search aliases…"
           class="flex-1"
         />
-        {/* Quick-create (lightning) */}
         <button
           type="button"
-          onClick={handleQuickCreate}
+          onClick={() => void handleQuickCreate()}
           disabled={quickCreating || atLimit}
           title="Quick create random alias (copies to clipboard)"
           aria-label="Quick create random alias"
@@ -251,19 +326,18 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
         >
           {quickCreating ? (
             <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
-              <path d="M21 3v5h-5"/>
+              <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+              <path d="M21 3v5h-5" />
             </svg>
           ) : (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
             </svg>
           )}
         </button>
-        {/* Toggle create form */}
         <button
           type="button"
-          onClick={() => setCreating((s) => !s)}
+          onClick={() => setCreating((state) => !state)}
           class={`h-9 w-9 flex items-center justify-center rounded-md border border-input transition-all shrink-0 ${
             creating
               ? "bg-primary text-primary-foreground border-primary"
@@ -274,23 +348,21 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
         >
           {creating ? (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/>
-              <line x1="6" y1="6" x2="18" y2="18"/>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           ) : (
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="12" y1="5" x2="12" y2="19"/>
-              <line x1="5" y1="12" x2="19" y2="12"/>
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
             </svg>
           )}
         </button>
       </div>
 
-      {/* Alias count + limit warning */}
       {!loading && (
         <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2">
-            {/* Filter chips */}
             {(["all", "active", "inactive"] as FilterMode[]).map((mode) => (
               <button
                 key={mode}
@@ -306,11 +378,10 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
               </button>
             ))}
           </div>
-          {/* Sort + refresh + export */}
           <div className="flex items-center gap-1.5">
-<button
+            <button
               type="button"
-              onClick={handleRefresh}
+              onClick={() => void handleRefresh()}
               disabled={refreshing}
               className="text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40"
               title="Refresh"
@@ -331,7 +402,7 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
             </button>
             <select
               value={sortMode}
-              onChange={(e) => handleSortChange((e.target as HTMLSelectElement).value as SortMode)}
+              onChange={(event) => handleSortChange((event.target as HTMLSelectElement).value as SortMode)}
               className="text-xs text-muted-foreground bg-background border-none outline-none cursor-pointer hover:text-foreground"
             >
               <option value="newest">Newest</option>
@@ -341,23 +412,27 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
         </div>
       )}
 
-      {/* Alias limit warning */}
       {atLimit && (
         <p className="text-xs text-destructive mb-2">Alias limit reached</p>
       )}
       {!atLimit && randomRemaining !== null && randomRemaining <= 3 && (
-        <p className="text-xs text-muted-foreground mb-2">{randomRemaining} random alias{randomRemaining !== 1 ? "es" : ""} remaining</p>
+        <p className="text-xs text-muted-foreground mb-2">
+          {randomRemaining} random alias{randomRemaining !== 1 ? "es" : ""} remaining
+        </p>
       )}
 
-      {/* Create form */}
       {creating && (
         <div className="mb-3 p-3 border border-border/60 rounded-xl bg-card animate-slide-down">
           <AliasCreate
             domains={domains}
+            recipients={recipients}
+            vaultStatus={vaultStatus}
+            onRequireVault={onRequireVault}
             onCreated={(alias) => {
-              const updated = [alias, ...aliases];
-              setAliases(updated);
-              setCache("aliases", updated, updated.length);
+              const updatedAliases = aliases.some((existingAlias) => existingAlias.id === alias.id)
+                ? aliases.map((existingAlias) => (existingAlias.id === alias.id ? alias : existingAlias))
+                : [alias, ...aliases];
+              void writeAliases(updatedAliases);
               setCreating(false);
               onRefreshUser();
             }}
@@ -376,18 +451,18 @@ export function AliasTab({ user, onRefreshUser, onError, onSuccess, onCountChang
         <div className="overflow-y-auto overflow-x-hidden flex-1">
           <AliasList
             aliases={sorted}
-            hasSearch={!!q}
+            hasSearch={Boolean(q)}
             onClearSearch={() => setSearch("")}
             focusedIndex={focusedIndex}
-            onUpdate={(updated) => {
-              const newAliases = aliases.map((a) => (a.id === updated.id ? updated : a));
-              setAliases(newAliases);
-              setCache("aliases", newAliases, newAliases.length);
+            vaultStatus={vaultStatus}
+            onRequireVault={onRequireVault}
+            onUpdate={(updatedAlias) => {
+              const nextAliases = aliases.map((alias) => (alias.id === updatedAlias.id ? updatedAlias : alias));
+              void writeAliases(nextAliases);
             }}
             onDelete={(id) => {
-              const newAliases = aliases.filter((a) => a.id !== id);
-              setAliases(newAliases);
-              setCache("aliases", newAliases, newAliases.length);
+              const nextAliases = aliases.filter((alias) => alias.id !== id);
+              void writeAliases(nextAliases);
               onRefreshUser();
             }}
             onError={onError}

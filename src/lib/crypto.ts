@@ -217,6 +217,10 @@ function generateBaseIv(): string {
   return arrayBufferToBase64Url(iv);
 }
 
+export function generateIvString(): string {
+  return generateBaseIv();
+}
+
 function generateSalt(): string {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
   return arrayBufferToBase64Url(salt);
@@ -238,7 +242,7 @@ async function deriveKeyFromPassword(
     outputType: "binary",
   });
 
-  return crypto.subtle.importKey("raw", hash, ALGORITHM, true, [
+  return crypto.subtle.importKey("raw", getView(hash), ALGORITHM, true, [
     "encrypt",
     "decrypt",
   ]);

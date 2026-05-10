@@ -34,6 +34,13 @@ export class NetworkError extends Error {
   }
 }
 
+export class PermissionError extends Error {
+  constructor(message = "Grant access to the configured anon.li origin in extension settings.") {
+    super(message);
+    this.name = "PermissionError";
+  }
+}
+
 export interface UserMessage {
   message: string;
   type: "error" | "info";
@@ -43,6 +50,9 @@ export interface UserMessage {
 export function toUserMessage(err: unknown, opts?: { onOpenSettings?: () => void }): UserMessage {
   if (err instanceof NetworkError) {
     return { message: "You're offline", type: "info" };
+  }
+  if (err instanceof PermissionError) {
+    return { message: err.message, type: "error" };
   }
   if (err instanceof AuthError) {
     return {

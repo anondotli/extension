@@ -3,22 +3,22 @@ export interface User {
   email: string;
   name?: string | null;
   tier: "free" | "plus" | "pro";
-  product?: string | null;
+  product?: "bundle" | "alias" | "drop" | null;
   storage: {
-    used: string;  // BigInt serialized as string
+    used: string;
     limit: string;
   };
   features: {
-    pgp: boolean;
-    customDomains: boolean;
+    customKey: boolean;
+    downloadLimits: boolean;
     noBranding: boolean;
     downloadNotifications: boolean;
-    customKey: boolean;
+    filePreview?: boolean;
   };
   limits: {
-    max_file_size: number;
-    max_expiry_days: number;
-    api_requests: number;
+    maxFileSize: number;
+    maxExpiryDays: number;
+    apiRequests: number;
   };
   aliases?: {
     random: { used: number; limit: number };
@@ -27,26 +27,51 @@ export interface User {
   domains?: { used: number; limit: number };
   recipients?: { used: number; limit: number };
   drops?: { count: number };
+  vaultConfigured: boolean;
+}
+
+export interface AliasRecipient {
+  id: string;
+  email: string;
+  isPrimary: boolean;
 }
 
 export interface Alias {
   id: string;
   email: string;
   active: boolean;
-  label?: string | null;
-  description?: string | null;
-  note?: string | null;
+  label: string | null;
+  note: string | null;
+  encryptedLabel: string | null;
+  encryptedNote: string | null;
+  metadataLocked: boolean;
+  recipients: AliasRecipient[];
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface DropFile {
+  id: string;
+  encryptedName: string;
+  size: string;
+  mimeType: string;
+  iv: string;
 }
 
 export interface Drop {
   id: string;
+  encryptedTitle: string | null;
+  iv: string;
   fileCount: number;
   downloadCount: number;
   disabled: boolean;
+  customKey: boolean;
+  uploadComplete: boolean;
+  totalSize: string;
   createdAt: string;
-  expiresAt?: string | null;
-  maxDownloads?: number | null;
+  expiresAt: string | null;
+  maxDownloads: number | null;
+  files: DropFile[];
 }
 
 export interface Domain {
@@ -55,12 +80,35 @@ export interface Domain {
   verified: boolean;
 }
 
+export interface Recipient {
+  id: string;
+  email: string;
+  verified: boolean;
+  isDefault: boolean;
+}
+
 export interface CreateDropResponse {
-  drop_id: string;
-  session_token?: string;
+  dropId: string;
+  expiresAt: string | null;
+  ownerKeyStored: boolean;
 }
 
 export interface AddFileResponse {
   fileId: string;
-  uploadUrls: Record<string, string>;
+  s3UploadId: string;
+  uploadUrls: Record<number, string>;
+}
+
+export interface VaultUnlockMaterials {
+  vaultId: string;
+  vaultGeneration: number;
+  vaultSalt: string;
+  passwordWrappedVaultKey: string;
+  kdfVersion: number;
+}
+
+export interface WrappedDropKeyRecord {
+  dropId: string;
+  wrappedKey: string;
+  vaultGeneration: number;
 }

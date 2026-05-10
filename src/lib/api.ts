@@ -1,6 +1,7 @@
 import { getApiKey, getBaseUrl } from "./storage";
-import { ApiError, AuthError, RateLimitError, NetworkError } from "./errors";
+import { ApiError, AuthError, PermissionError, RateLimitError, NetworkError } from "./errors";
 import { MAX_RETRIES, RETRY_BASE_DELAY, EXTENSION_VERSION, REQUEST_TIMEOUT_MS } from "./constants";
+import { ensureBaseUrlPermission } from "./permissions";
 
 export interface RateLimitInfo {
   limit: number;
@@ -32,6 +33,13 @@ interface ApiListResponse<T> {
 interface ApiErrorResponse {
   error: { message: string; code?: string } | string;
   meta?: { request_id?: string };
+}
+
+interface ApiEnvelope<T> {
+  data?: T;
+  meta?: { total?: number; [key: string]: unknown };
+  success?: boolean;
+  [key: string]: unknown;
 }
 
 async function getHeaders(): Promise<Record<string, string>> {
@@ -117,6 +125,23 @@ async function handleError(res: Response): Promise<never> {
   throw new ApiError(message, res.status, code, body?.meta?.request_id);
 }
 
+async function parseJson<T>(res: Response): Promise<T | null> {
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+
+  return (await res.json()) as T;
+}
+
+function unwrapData<T>(payload: unknown): T {
+  if (payload && typeof payload === "object" && "data" in payload) {
+    return (payload as ApiEnvelope<T>).data as T;
+  }
+
+  return payload as T;
+}
+
 function withTimeout(options: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): { options: RequestInit; cleanup: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -172,41 +197,63 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function requestJson(
+  path: string,
+  options: RequestInit,
+  retry = true
+): Promise<{ payload: unknown; rateLimit?: RateLimitInfo }> {
+  const baseUrl = await getBaseUrl();
+  const hasPermission = await ensureBaseUrlPermission(baseUrl, false);
+  if (!hasPermission) {
+    throw new PermissionError();
+  }
+
+  const url = `${baseUrl}${path}`;
+  const headers = await getHeaders();
+  const res = retry
+    ? await fetchWithRetry(url, {
+        ...options,
+        headers: {
+          ...headers,
+          ...(options.headers as Record<string, string> | undefined),
+        },
+      })
+    : await fetch(url, {
+        ...options,
+        headers: {
+          ...headers,
+          ...(options.headers as Record<string, string> | undefined),
+        },
+      });
+
+  if (!res.ok) await handleError(res);
+
+  return {
+    payload: await parseJson<unknown>(res),
+    rateLimit: extractRateLimit(res),
+  };
+}
+
 export async function apiGet<T>(
   path: string,
   retry = true
 ): Promise<ApiResult<T>> {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}${path}`;
-  const headers = await getHeaders();
-  const res = retry
-    ? await fetchWithRetry(url, { method: "GET", headers })
-    : await fetch(url, { method: "GET", headers });
-
-  if (!res.ok) await handleError(res);
-
-  const rateLimit = extractRateLimit(res);
-  const json = (await res.json()) as ApiSuccessResponse<T>;
-  return { data: json.data, rateLimit };
+  const { payload, rateLimit } = await requestJson(path, { method: "GET" }, retry);
+  return { data: unwrapData<T>(payload), rateLimit };
 }
 
 export async function apiGetList<T>(
   path: string
 ): Promise<ApiListResult<T>> {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}${path}`;
-  const headers = await getHeaders();
-  const res = await fetchWithRetry(url, { method: "GET", headers });
-
-  if (!res.ok) await handleError(res);
-
-  const rateLimit = extractRateLimit(res);
-  const json = (await res.json()) as ApiListResponse<T>;
+  const { payload, rateLimit } = await requestJson(path, { method: "GET" });
+  const json = (payload ?? {}) as ApiListResponse<T> | T[];
+  const data = Array.isArray(json) ? json : json.data;
+  const meta = Array.isArray(json) ? { total: data.length } : json.meta;
   return {
-    data: json.data,
-    total: json.meta.total,
+    data,
+    total: meta.total ?? data.length,
     rateLimit,
-    meta: json.meta as Record<string, unknown>,
+    meta: meta as Record<string, unknown>,
   };
 }
 
@@ -214,51 +261,30 @@ export async function apiPost<T>(
   path: string,
   body?: unknown
 ): Promise<ApiResult<T>> {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}${path}`;
-  const headers = await getHeaders();
-  const res = await fetchWithRetry(url, {
+  const { payload, rateLimit } = await requestJson(path, {
     method: "POST",
-    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-
-  if (!res.ok) await handleError(res);
-
-  const rateLimit = extractRateLimit(res);
-  const json = (await res.json()) as ApiSuccessResponse<T>;
-  return { data: json.data, rateLimit };
+  return { data: unwrapData<T>(payload), rateLimit };
 }
 
 export async function apiPatch<T>(
   path: string,
   body?: unknown
 ): Promise<ApiResult<T>> {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}${path}`;
-  const headers = await getHeaders();
-  const res = await fetchWithRetry(url, {
+  const { payload, rateLimit } = await requestJson(path, {
     method: "PATCH",
-    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-
-  if (!res.ok) await handleError(res);
-
-  const rateLimit = extractRateLimit(res);
-  const json = (await res.json()) as ApiSuccessResponse<T>;
-  return { data: json.data, rateLimit };
+  return { data: unwrapData<T>(payload), rateLimit };
 }
 
-export async function apiDelete(path: string): Promise<{ rateLimit?: RateLimitInfo }> {
-  const baseUrl = await getBaseUrl();
-  const url = `${baseUrl}${path}`;
-  const headers = await getHeaders();
-  const res = await fetchWithRetry(url, { method: "DELETE", headers });
-
-  if (!res.ok) await handleError(res);
-
-  return { rateLimit: extractRateLimit(res) };
+export async function apiDelete(path: string, body?: unknown): Promise<{ rateLimit?: RateLimitInfo }> {
+  const { rateLimit } = await requestJson(path, {
+    method: "DELETE",
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  return { rateLimit };
 }
 
 export async function apiFetch(
@@ -266,6 +292,10 @@ export async function apiFetch(
   options: RequestInit = {}
 ): Promise<Response> {
   const baseUrl = await getBaseUrl();
+  const hasPermission = await ensureBaseUrlPermission(baseUrl, false);
+  if (!hasPermission) {
+    throw new PermissionError();
+  }
   const url = `${baseUrl}${path}`;
   const headers = await getHeaders();
   return fetch(url, {

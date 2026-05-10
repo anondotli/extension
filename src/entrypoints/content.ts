@@ -1,11 +1,20 @@
 import { defineContentScript } from "wxt/utils/define-content-script";
-import { getApiKey, getIgnoredSites, isHostnameIgnored } from "../lib/storage";
+import { getApiKey, getBaseUrl, getIgnoredSites, isHostnameIgnored } from "../lib/storage";
 
 export default defineContentScript({
   matches: ["<all_urls>"],
   excludeMatches: ["*://anon.li/*", "*://www.anon.li/*"],
   runAt: "document_idle",
   async main() {
+    try {
+      const baseUrl = await getBaseUrl();
+      if (location.origin === new URL(baseUrl).origin) {
+        return;
+      }
+    } catch {
+      // Ignore invalid configured origins and keep default behavior.
+    }
+
     // Check if this site is on the ignore list
     const ignoredSites = await getIgnoredSites();
     const currentHost = location.hostname.replace(/^www\./, "");
